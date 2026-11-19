@@ -140,6 +140,7 @@ function pcSentinelSettings(): Settings {
   settings.agentLoop = {
     enabled: true,
     transportRetry: false,
+    transportRetryDelaySeconds: 4,
     maxReplans: 5,
     stallRepeatLimit: 4,
     sameErrorLimit: 4,

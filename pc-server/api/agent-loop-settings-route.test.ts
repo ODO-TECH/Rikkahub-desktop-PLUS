@@ -50,11 +50,27 @@ describe("settings/agent-loop", () => {
     expect(state.settings.agentLoop.transportRetry).toBe(false);
   });
 
+  test("重试等待间隔落库并回传", async () => {
+    const res = await postAgentLoop({ transportRetryDelaySeconds: 5 });
+    expect(res?.status).toBe(200);
+    const body = (await res!.json()) as { agentLoop: Record<string, unknown> };
+    expect(body.agentLoop.transportRetryDelaySeconds).toBe(5);
+    expect(state.settings.agentLoop.transportRetryDelaySeconds).toBe(5);
+  });
+
   test("整数越界整单拒绝,现值不变", async () => {
     const before = state.settings.agentLoop.maxReplans;
     const res = await postAgentLoop({ maxReplans: 99 });
     expect(res?.status).toBe(400);
     expect(state.settings.agentLoop.maxReplans).toBe(before);
+  });
+
+  test("重试等待间隔越界整单拒绝,现值不变", async () => {
+    const before = state.settings.agentLoop.transportRetryDelaySeconds;
+    expect((await postAgentLoop({ transportRetryDelaySeconds: 0 }))?.status).toBe(400);
+    expect((await postAgentLoop({ transportRetryDelaySeconds: 31 }))?.status).toBe(400);
+    expect((await postAgentLoop({ transportRetryDelaySeconds: 1.5 }))?.status).toBe(400);
+    expect(state.settings.agentLoop.transportRetryDelaySeconds).toBe(before);
   });
 
   test("类型不符整单拒绝", async () => {

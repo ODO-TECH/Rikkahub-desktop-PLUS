@@ -224,6 +224,10 @@ export type StreamHooksWithSink = StreamHooks & {
    *  已输出内容、副作用工具之后、用户中止、4xx/配额计费一律不重试。设置里
    *  transportRetry 默认开,且独立于 agentLoop.enabled。 */
   transportRetry?: boolean;
+  /** 自主循环(S4):退避基数(ms),即第一次重试前等多久,其后按 2 倍递增。
+   *  来自设置 transportRetryDelaySeconds;不传 = 用 TRANSPORT_RETRY_BASE_DELAY_MS(1s)。
+   *  服务端给了 Retry-After 时取两者中更长的:绝不比服务端更早发,但它给得短也不顶掉本值。 */
+  transportRetryBaseDelayMs?: number;
 };
 
 /** 工具调度上下文：在工具执行回调外再包一层 executeTool 引用，

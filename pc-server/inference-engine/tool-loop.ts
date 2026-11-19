@@ -277,6 +277,7 @@ export async function runStreamingToolLoop(
     // 重试不推进 round(不占 256 轮预算);状态条经 engine_status 显示第几次/共几次,
     // 运行记录由协调器同一通道落 retry 流水。
     const transportRetry = hooks.transportRetry === true && !toolsExecuted && !forceNonStream;
+    const transportRetryBaseDelayMs = hooks.transportRetryBaseDelayMs ?? TRANSPORT_RETRY_BASE_DELAY_MS;
     let retriedThisRound = false;
     const clearRetryStatus = () => {
       if (retriedThisRound) hooks.sink?.({ kind: "engine_status", status: { busy: false } });
@@ -319,7 +320,7 @@ export async function runStreamingToolLoop(
         },
         {
           maxAttempts: transportRetry ? TRANSPORT_RETRY_MAX_ATTEMPTS : 1,
-          baseDelayMs: TRANSPORT_RETRY_BASE_DELAY_MS,
+          baseDelayMs: transportRetryBaseDelayMs,
           signal,
           shouldRetry: (err) => {
             if (signal?.aborted) return false;
@@ -330,7 +331,7 @@ export async function runStreamingToolLoop(
           },
           delayFor: ({ failedAttempt, baseDelayMs, error }) =>
             error instanceof TransportHttpError
-              ? transportRetryDelayMs(failedAttempt, error.retryAfterMs)
+              ? transportRetryDelayMs(failedAttempt, error.retryAfterMs, transportRetryBaseDelayMs)
               : baseDelayMs * 2 ** Math.max(0, failedAttempt - 1),
           onRetry: ({ attempt }) => {
             retriedThisRound = true;

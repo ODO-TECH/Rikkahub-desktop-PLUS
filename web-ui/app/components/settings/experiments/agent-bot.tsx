@@ -30,6 +30,7 @@ import { AgentBotAuditSection } from "~/components/settings/experiments/agent-bo
 const DEFAULT_SETTINGS: AgentLoopSettings = {
   enabled: false,
   transportRetry: true,
+  transportRetryDelaySeconds: 1,
   maxReplans: 2,
   stallRepeatLimit: 3,
   sameErrorLimit: 3,
@@ -153,6 +154,20 @@ export function AgentBotSection({ settings, onSettings }: SettingsSectionProps) 
             description={t("settings:experiments.agent_bot.transport_retry_desc")}
             checked={current.transportRetry}
             onCheckedChange={(checked) => void patch({ transportRetry: checked })}
+          />
+          <SettingsRow
+            label={t("settings:experiments.agent_bot.transport_retry_delay")}
+            description={t("settings:experiments.agent_bot.transport_retry_delay_desc")}
+            control={
+              <NumberField
+                value={current.transportRetryDelaySeconds}
+                min={1}
+                max={30}
+                disabled={!current.transportRetry}
+                ariaLabel={t("settings:experiments.agent_bot.transport_retry_delay")}
+                onCommit={(value) => void patch({ transportRetryDelaySeconds: value })}
+              />
+            }
           />
           <SettingsSwitchRow
             label={t("settings:experiments.agent_bot.scheduling")}

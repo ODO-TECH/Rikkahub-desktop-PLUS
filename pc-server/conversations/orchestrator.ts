@@ -515,6 +515,9 @@ export async function callProviderStreaming(
     // 自主循环(S4):传输重试默认开,且独立于 agentLoop.enabled(只作用于零输出失败窗口,
     // 属稳定性修复)。存量 state 无该字段时按默认 true 处理。
     transportRetry: state.settings.agentLoop?.transportRetry !== false,
+    // 退避基数:设置按秒存,引擎按 ms 等。存量 state 无该字段时回落默认 1s(与改动前一致)。
+    transportRetryBaseDelayMs:
+      Math.max(1, state.settings.agentLoop?.transportRetryDelaySeconds ?? 1) * 1000,
     // S9 工具发现行:轮边界刷新。命中工具已在 search_tools 执行时登记 pending,
     // 这里只把 pending 提升为 active 并按 provider 形状重建 tools;无变化不改 body。
     refreshTools: supportsAbility(picked.model, "TOOL")

@@ -20,6 +20,10 @@ export interface AgentLoopSettings {
   /** 传输重试(退避 1s→2s,合计最多 3 次尝试)。只作用于本轮尚未产生任何可见输出的可重试失败;
    *  已流出内容的轮次、副作用工具之后、用户中止、4xx/配额/计费错误一律不重试。 */
   transportRetry: boolean;
+  /** 传输重试的退避基数(秒),第 N 次重试前等 基数 × 2^(N-1)。默认 1 = 既有的 1s→2s。
+   *  服务端给了 Retry-After 时取两者中更长的:绝不比服务端要求的更早发,但它给得短
+   *  也不会把这里的设置顶掉(降温型 429 常回 0/1s)。 */
+  transportRetryDelaySeconds: number;
   /** replan 上限。计划连续改写后 settled 步骤数仍不增长 → awaiting_user。 */
   maxReplans: number;
   /** 同一 (工具名, 规范化参数) 连续重复触发停滞的阈值。 */
@@ -36,6 +40,7 @@ export function defaultAgentLoopConfig(): AgentLoopSettings {
   return {
     enabled: false,
     transportRetry: true,
+    transportRetryDelaySeconds: 1,
     maxReplans: 2,
     stallRepeatLimit: 3,
     sameErrorLimit: 3,
@@ -57,6 +62,12 @@ export function normalizeAgentLoopConfig(raw: unknown): AgentLoopSettings {
   return {
     enabled: typeof input.enabled === "boolean" ? input.enabled : defaults.enabled,
     transportRetry: typeof input.transportRetry === "boolean" ? input.transportRetry : defaults.transportRetry,
+    transportRetryDelaySeconds: boundedInt(
+      input.transportRetryDelaySeconds,
+      defaults.transportRetryDelaySeconds,
+      1,
+      30,
+    ),
     maxReplans: boundedInt(input.maxReplans, defaults.maxReplans, 0, 10),
     stallRepeatLimit: boundedInt(input.stallRepeatLimit, defaults.stallRepeatLimit, 2, 20),
     sameErrorLimit: boundedInt(input.sameErrorLimit, defaults.sameErrorLimit, 2, 20),
@@ -86,7 +97,17 @@ export function validateAgentLoopPatch(body: Record<string, unknown>): AgentLoop
     if (typeof value !== "boolean") return { ok: false, error: `${key} must be a boolean` };
     patch[key] = value;
   }
-  const ranges: Array<[keyof Pick<AgentLoopSettings, "maxReplans" | "stallRepeatLimit" | "sameErrorLimit">, number, number]> = [
+  const ranges: Array<
+    [
+      keyof Pick<
+        AgentLoopSettings,
+        "transportRetryDelaySeconds" | "maxReplans" | "stallRepeatLimit" | "sameErrorLimit"
+      >,
+      number,
+      number,
+    ]
+  > = [
+    ["transportRetryDelaySeconds", 1, 30],
     ["maxReplans", 0, 10],
     ["stallRepeatLimit", 2, 20],
     ["sameErrorLimit", 2, 20],

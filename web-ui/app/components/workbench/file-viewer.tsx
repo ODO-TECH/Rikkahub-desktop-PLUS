@@ -284,8 +284,9 @@ export function FileViewer({
                 className="h-full min-h-[320px] w-full border-0 bg-white"
               />
             ) : isMermaid && !sourceMode ? (
-              // 与对话代码块同一渲染路径:iframe 内从 esm.sh 动态加载 mermaid 渲染,
-              // allow-scripts 是 mermaid 运行的最低要求;文档本身无应用同源权限。
+              // 与对话代码块同一渲染路径:iframe 内用绝对地址从本机同源加载 mermaid,
+              // 本地资源缺位才回退 CDN;allow-scripts 是 mermaid 运行的最低要求,
+              // 文档本身仍是opaque源,没有应用同源权限。
               <iframe
                 title={file.title}
                 srcDoc={buildMermaidPreviewDocument(file.preview.text)}

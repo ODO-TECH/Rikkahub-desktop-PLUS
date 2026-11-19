@@ -93,7 +93,7 @@ planning → acting → observing → deciding
 
 | 层 | 允许重试的情形 | 策略 | 禁止情形 |
 | --- | --- | --- | --- |
-| LLM 传输 | 本轮**尚未产生任何可见输出**（无 text/reasoning/tool delta）且错误可重试：408 / 429 / 5xx / 网络瞬断 / 响应头超时 | 指数退避 1s→2s（合计最多 3 次尝试）；尊重 `Retry-After`（封顶 30s，超过 60s 直接失败）；不占 256 轮预算；状态条 `retrying` 显示第几次 | 已流出内容的轮次（保留现有 nonStreamFallback 行为）；已执行过副作用工具之后；AbortError；400/401/403；配额与计费类错误 |
+| LLM 传输 | 本轮**尚未产生任何可见输出**（无 text/reasoning/tool delta）且错误可重试：408 / 429 / 5xx / 网络瞬断 / 响应头超时 | 指数退避（基数 = `transportRetryDelaySeconds`，默认 1s→2s；合计最多 3 次尝试）；尊重 `Retry-After`（封顶 30s，超过 60s 直接失败；`Retry-After` 与退避基数取较长——服务端要求是下限，但它给得短不顶掉设置值）；不占 256 轮预算；状态条 `retrying` 显示第几次 | 已流出内容的轮次（保留现有 nonStreamFallback 行为）；已执行过副作用工具之后；AbortError；400/401/403；配额与计费类错误 |
 | 工具 | 默认不自动重试。仅"只读幂等工具 + 网络类失败"可选重试 1 次 | 独立开关，默认关 | 一切写操作 / 有副作用工具；denied 的调用；参数改写式重试 |
 | 子任务 | 默认保持 `[FAILED]` 回灌语义 | 可选"最多重派 1 次且必须更换 prompt 或模型"，默认关 | 原样重派；深度解锁 |
 
@@ -139,7 +139,7 @@ planning → acting → observing → deciding
 
 对外命名：设置 › 实验功能里这一页叫 **AgentBot**——它是较大的实验性能力，自主循环只是其中一小部分（已含运行记录、判定终局、传输重试；任务生命周期与调度不在本期）。存储键与接口沿用 `agentLoop` / `settings/agent-loop`，改名只动展示面，不做数据迁移。
 
-`agentLoop.enabled` 默认 **false**——关闭时两条引擎通路与改动前逐字一致；`transportRetry` 默认 true（只作用于"零输出失败"窗口，属稳定性修复，可在关闭 `agentLoop` 时独立生效）；`maxReplans=2`、`stallRepeatLimit=3`、`sameErrorLimit=3`、`requireVerifiedCompletion=true`（随 enabled 生效）；只读工具重试、子任务重派默认关。
+`agentLoop.enabled` 默认 **false**——关闭时两条引擎通路与改动前逐字一致；`transportRetry` 默认 true（只作用于"零输出失败"窗口，属稳定性修复，可在关闭 `agentLoop` 时独立生效）；`transportRetryDelaySeconds=1`（退避基数，范围 1–30；服务端给了 `Retry-After` 时取两者中更长的，不会被它的小值顶掉）；`maxReplans=2`、`stallRepeatLimit=3`、`sameErrorLimit=3`、`requireVerifiedCompletion=true`（随 enabled 生效）；只读工具重试、子任务重派默认关。
 
 ## 5. 分阶段实施
 

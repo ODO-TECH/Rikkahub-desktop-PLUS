@@ -15,7 +15,8 @@ import { isRetryableHttpStatus } from "../foundation/retry";
 
 /** 含首次尝试。首次 + 2 次退避重试 = 最多多出 2 个计费请求。 */
 export const TRANSPORT_RETRY_MAX_ATTEMPTS = 3;
-/** 指数退避基数:1s → 2s(第三次尝试前);与 plan §3.4 的序列一致。 */
+/** 指数退避基数:1s → 2s(第三次尝试前);与 plan §3.4 的序列一致。
+ *  只是未配置时的默认值——设置里 transportRetryDelaySeconds 可改,见 transportRetryDelayMs。 */
 export const TRANSPORT_RETRY_BASE_DELAY_MS = 1000;
 /** Retry-After 等待上限:服务端要求的等待超过 30s 时按 30s 封顶。 */
 export const RETRY_AFTER_CAP_MS = 30_000;
@@ -59,13 +60,27 @@ export function parseRetryAfterMs(value: string | null | undefined, nowMs = Date
 }
 
 /** 单次重试前的等待时长(ms)。返回 null = 放弃重试(Retry-After 要求超过 60s)。
- *  有 Retry-After 时尊重服务端(封顶 30s),否则 1s → 2s 指数退避。 */
-export function transportRetryDelayMs(failedAttempt: number, retryAfterMs: number | null): number | null {
-  if (retryAfterMs !== null) {
-    if (retryAfterMs > RETRY_AFTER_FAIL_MS) return null;
-    return Math.min(RETRY_AFTER_CAP_MS, Math.max(0, retryAfterMs));
-  }
-  return TRANSPORT_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, failedAttempt - 1);
+ *  baseDelayMs 由设置里的 transportRetryDelaySeconds 决定,缺省 1s → 2s。
+ *
+ *  两条规则怎么合:服务端要求是**下限**(绝不比它说的更早发),设置值是**下限的抬高**
+ *  (取两者较大)。只按服务端封顶的话,供应商回一个 retry-after: 1 就把用户设的
+ *  30s 打回 1s——429 里写着"等内存降温"的服务商正属此类,设置等于无效。
+ *  封顶 30s 只约束服务端那一半,不让用户自己设的更长等待被截掉。 */
+export function transportRetryDelayMs(
+  failedAttempt: number,
+  retryAfterMs: number | null,
+  baseDelayMs: number = TRANSPORT_RETRY_BASE_DELAY_MS,
+): number | null {
+  const backoffMs = transportRetryBackoffMs(failedAttempt, baseDelayMs);
+  if (retryAfterMs === null) return backoffMs;
+  if (retryAfterMs > RETRY_AFTER_FAIL_MS) return null;
+  return Math.max(Math.min(RETRY_AFTER_CAP_MS, Math.max(0, retryAfterMs)), backoffMs);
+}
+
+/** 无 Retry-After 时的指数退避:base × 2^(第几次失败-1);非法基数回落默认 1s。 */
+function transportRetryBackoffMs(failedAttempt: number, baseDelayMs: number): number {
+  const base = Number.isFinite(baseDelayMs) && baseDelayMs > 0 ? baseDelayMs : TRANSPORT_RETRY_BASE_DELAY_MS;
+  return base * 2 ** Math.max(0, failedAttempt - 1);
 }
 
 /** 非 2xx 失败:保留引入前的人话文案(`${provider} ${status}: ${body…}`),同时携带

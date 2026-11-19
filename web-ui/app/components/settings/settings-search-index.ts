@@ -371,6 +371,7 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("experiments/agent-bot", "experiments.agent_bot.master_title"),
   row("experiments/agent-bot", "experiments.agent_bot.enable", { keywords: "agent_bot" }),
   row("experiments/agent-bot", "experiments.agent_bot.transport_retry", { keywords: "agent_bot" }),
+  row("experiments/agent-bot", "experiments.agent_bot.transport_retry_delay", { keywords: "agent_bot" }),
   row("experiments/agent-bot", "experiments.agent_bot.fold_loop", { keywords: "agent_bot" }),
   row("experiments/agent-bot", "experiments.agent_bot.require_verified", { keywords: "agent_bot" }),
   row("experiments/agent-bot", "experiments.agent_bot.max_replans", { keywords: "agent_bot" }),
