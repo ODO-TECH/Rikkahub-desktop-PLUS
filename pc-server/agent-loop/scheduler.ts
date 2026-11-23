@@ -40,7 +40,7 @@ export interface SchedulerTickResult {
 
 function schedulerEnabled(): boolean {
   const config = state.settings.agentLoop;
-  return config?.enabled === true && config.schedulingEnabled === true;
+  return config?.schedulingEnabled === true;
 }
 
 function busy(conversationId: string): boolean {

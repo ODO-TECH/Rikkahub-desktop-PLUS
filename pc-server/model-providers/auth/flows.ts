@@ -2,7 +2,7 @@
 // 唯一触碰 pi-ai auth 协议层(load/resolve 及各 flow 实现)的宿主模块:其余文件只面向
 // 这里的声明式元数据。新增订阅供应商 = 在 OAUTH_FLOWS 登记一行 + shaping/catalog 补声明。
 
-import type { OAuthCredential } from "../../../pi/packages/ai/src/auth/types.ts";
+import type { OAuthCredential } from "../../../vendor/pi-auth/auth/types.ts";
 import type { OAuthFlowId, Provider } from "../../foundation/types";
 
 export type PiOAuthAuth = {
@@ -116,12 +116,12 @@ import {
   loadXaiOAuth,
   loadAnthropicOAuth,
   registerBundledOAuthFlowLoaders,
-} from "../../../pi/packages/ai/src/auth/oauth/load.ts";
-import { openaiCodexOAuth } from "../../../pi/packages/ai/src/auth/oauth/openai-codex.ts";
-import { kimiCodingOAuth } from "../../../pi/packages/ai/src/auth/oauth/kimi-coding.ts";
-import { githubCopilotOAuth } from "../../../pi/packages/ai/src/auth/oauth/github-copilot.ts";
-import { xaiOAuth } from "../../../pi/packages/ai/src/auth/oauth/xai.ts";
-import { anthropicOAuth } from "../../../pi/packages/ai/src/auth/oauth/anthropic.ts";
+} from "../../../vendor/pi-auth/auth/oauth/load.ts";
+import { openaiCodexOAuth } from "../../../vendor/pi-auth/auth/oauth/openai-codex.ts";
+import { kimiCodingOAuth } from "../../../vendor/pi-auth/auth/oauth/kimi-coding.ts";
+import { githubCopilotOAuth } from "../../../vendor/pi-auth/auth/oauth/github-copilot.ts";
+import { xaiOAuth } from "../../../vendor/pi-auth/auth/oauth/xai.ts";
+import { anthropicOAuth } from "../../../vendor/pi-auth/auth/oauth/anthropic.ts";
 
 // Bun standalone 模式(编译为 exe)下注册静态打包的 oauth 实现,绕过 load.ts 的动态 import。
 if (Bun.isStandaloneExecutable) {

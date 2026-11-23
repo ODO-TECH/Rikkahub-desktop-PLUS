@@ -13,6 +13,17 @@ export interface ModelConfig {
   translateModeId: string;
   imageGenerationModelId: string;
   ocrModelId: string;
+  // ── DeepSeek 官方 OCR（PC-only：安卓 Settings 无对应字段，跨端导出整键剥离）──────────
+  // 语义是「换 OCR 引擎」，不是「多一个场景档」：开启后图片与「本地读不出字」的文档
+  // 附件都改调官方 POST /v1/tools/ocr，`ocrModelId` 退为失败时的回落引擎（见 §3 决策）。
+  // 默认关——关闭时 OCR 行为与引入前逐字一致（房规 §5「新能力默认关」）。
+  // 计费：1.5 元/1000 页，按识别成功的页数计，客户端断开不取消识别、完成的照常计费。
+  deepseekOcrEnabled: boolean;
+  /** 官方 API Key。空串 = 未配置：此时不静默回落，直接给人话错误（凭据口径见 docs/plan-deepseek-tools.md §3）。 */
+  deepseekOcrApiKey: string;
+  /** 官方 purpose：text_recognition（默认，不含图片的 Word/PPT 直接提字、其余逐页）
+   *  | rich_layout_recognition（一律逐页，保留版式标记与坐标）。值域外的写入按默认落。 */
+  deepseekOcrPurpose: string;
   compressModelId: string;
   // 聊天模式自动压缩(PC 独有):生成前若上下文估算越过 contextWindow - reserveTokens,
   // 先按与手动压缩完全相同的记录/编码路径压一次再发请求。默认关——压缩会调用压缩模型,

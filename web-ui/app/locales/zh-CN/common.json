@@ -58,6 +58,7 @@
     "theme_deleted": "主题已删除",
     "welcome_back": "欢迎回来",
     "new_conversation": "新建对话",
+    "new_chat_conversation": "新建纯对话",
     "conversations": "会话",
     "loading": "加载中...",
     "no_conversations": "暂无会话",
@@ -102,12 +103,17 @@
     "empty_content": "(空内容)",
     "type_label": "类型：{{type}}",
     "type_labels": {
-      "conversation_files": "会话文件",
+      "conversation_files": "文件 · 运行",
       "workspace_files": "工作区文件",
       "code_preview": "代码预览",
       "media_studio": "媒体生成",
       "ssh_terminal": "SSH 终端",
       "plan": "计划"
+    },
+    "views": {
+      "aria": "会话侧栏视图",
+      "files": "文件",
+      "activity": "运行"
     },
     "close_panel": "关闭面板",
     "toggle_open": "打开文件侧边栏",
@@ -115,8 +121,8 @@
     "resize": "调整文件侧边栏宽度",
     "plan": {
       "title": "计划",
-      "toggle_open": "打开计划面板",
-      "toggle_close": "关闭计划面板",
+      "toggle_open": "展开计划",
+      "toggle_close": "收起计划",
       "untitled": "未命名计划",
       "empty": "这个会话还没有计划。开启「设置 › 实验功能 › 计划面板」后，助手面对多步任务会先把工作拆成一份计划。",
       "progress": "{{done}}/{{total}} 已完成",

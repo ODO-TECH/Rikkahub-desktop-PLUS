@@ -13,7 +13,7 @@
 // 关键:写路径(commitCredential)锁的是「找到的那行的宿主 id」,不是传入的 pi id,
 // 否则预置供应商(宿主 id ≠ pi id)的刷新回写会因 p.id !== providerId 全部失配而丢。
 
-import type { OAuthCredential } from "../../../pi/packages/ai/src/auth/types.ts";
+import type { OAuthCredential } from "../../../vendor/pi-auth/auth/types.ts";
 import { updateSettings } from "../../app-config";
 import type { Provider } from "../../foundation/types";
 import { reportError } from "../../observability/app-errors";

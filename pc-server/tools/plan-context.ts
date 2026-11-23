@@ -20,6 +20,7 @@ export interface PlanContext {
   previous: Plan | null;
   /** true = 允许重设目标三件套(首次发布 / 新用户消息之后)。 */
   allowGoalChange: boolean;
+  availableEvidence?: Array<{ toolCallId: string; toolName: string }>;
 }
 
 function safeParse(text: string): unknown {
@@ -50,6 +51,7 @@ export function findPlanContext(conversation: Conversation, currentToolCallId?: 
   let seq = 0;
   let lastUserSeq = -1;
   let candidate: { plan: Plan; seq: number } | null = null;
+  const evidence = new Map<string, { toolCallId: string; toolName: string }>();
   const nodes = Array.isArray(conversation.messages) ? conversation.messages : [];
   for (const node of nodes) {
     const index = typeof node?.selectIndex === "number" ? node.selectIndex : 0;
@@ -60,15 +62,24 @@ export function findPlanContext(conversation: Conversation, currentToolCallId?: 
     if (message.role === "USER" && !isRunResumeMessage(message)) lastUserSeq = seq;
     const parts = Array.isArray(message.parts) ? message.parts : [];
     for (const part of parts) {
-      if (!isRecord(part) || part.type !== "tool" || part.toolName !== PLAN_TOOL_NAME) continue;
+      if (!isRecord(part) || part.type !== "tool") continue;
       if (currentToolCallId && String(part.toolCallId ?? "") === currentToolCallId) continue;
+      if (part.toolName !== PLAN_TOOL_NAME) {
+        const output = Array.isArray(part.output) ? part.output : [];
+        if (part.toolCallId && output.length && !output.some(entry => isRecord(entry) && ("error" in entry || String(entry.type) === "error")) &&
+            (!isRecord(part.approvalState) || part.approvalState.type !== "denied")) {
+          evidence.set(String(part.toolCallId), {toolCallId:String(part.toolCallId),toolName:String(part.toolName)});
+        }
+        continue;
+      }
       const plan = planFromToolPart(part);
       if (plan) candidate = { plan, seq };
     }
   }
-  if (!candidate) return { previous: null, allowGoalChange: true };
+  const availableEvidence = [...evidence.values()];
+  if (!candidate) return { previous: null, allowGoalChange: true, availableEvidence };
   const sameRun = candidate.seq > lastUserSeq;
-  return { previous: sameRun ? candidate.plan : null, allowGoalChange: !sameRun };
+  return { previous: sameRun ? candidate.plan : null, allowGoalChange: !sameRun, availableEvidence };
 }
 
 /** steering 注入落库的用户消息(steerBoundary 加的注解):是同一生成内的补发,

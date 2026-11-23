@@ -72,3 +72,19 @@ export const embeddedBashExe = join(embeddedBashDir, "usr", "bin", "bash.exe");
 export const embeddedBashStampPath = join(embeddedBashDir, ".rikkahub-stamp.json");
 
 export const MODELS_DEV_CACHE_PATH = join(dataDir, "models-dev-cache.json");
+
+// 用量自校准环(inference-engine/token-calibration.ts):按 (provider, model) 学"本地估算
+// → 真实 promptTokens"的比值。运行时遥测,不是用户设置——不进 state.json,因此不参与
+// 备份与安卓导出;删掉只是回到"不校准"(系数 1.0),不影响任何会话数据。
+export const tokenCalibrationPath = join(dataDir, "token-calibration.json");
+
+// 内置检索工具（@rikkahub/moegirl）的磁盘缓存：上游匿名侧有软限流，同一查询在 TTL 内必须
+// 能零网络开销复用。放持久的 dataDir 下（与 updatesCacheDir 同一口径）——系统临时目录会被
+// OS/磁盘清理/重启清掉，缓存也就白存了。过期件由 persistence/data-dir-hygiene 回收。
+export const wikiCacheDir = join(dataDir, "wiki-cache");
+
+// 油库里(AquesTalk)本地合成的 SDK 随包目录:与 icons/ fonts/ 同一套「紧挨 exe 的资产」纪律
+// (scripts/sync-dist-assets.ts 每次编译幂等重放,deploy-portable 成对搬运)。放 rootDir 而不是
+// dataDir:这是只读的程序资产,不是用户数据——备份/清理/换机都不该动它,而 dataDir 会被当成
+// 可写用户区对待。AqKanji2Koe 用 ANSI 读词典路径,所以这条路径必须保持纯 ASCII。
+export const yukkuriSdkDir = join(rootDir, "yukkuri-sdk");

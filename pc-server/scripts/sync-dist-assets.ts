@@ -4,23 +4,35 @@
 // 清空/初次 clone 后 compile)exe 落地而无这两目录,品牌 Logo 与内置字体全部静默
 // 回退兜底字母——表象是"Logo 全变默认",极难从代码侧排查。故 compile 每次幂等
 // 重放,缺则补、旧则盖,保证 dist 便携布局永远自洽。
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+// yukkuri-sdk/ 同理由 rootDir 解析(foundation/paths.ts 的 yukkuriSdkDir):缺了它,
+// 油库里语音在便携版里直接「引擎未就绪」,而源码运行却正常——最容易误判成代码问题。
+import { cpSync, existsSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..", "..");
+const pcServerDir = resolve(import.meta.dir, "..");
 const distDir = join(repoRoot, "dist");
 
-for (const assetDir of ["icons", "fonts"] as const) {
+// yukkuri-sdk/ 是嵌套结构(lib64/ 与 aq_dic/ 各一层),所以整目录递归复制而不是逐文件搬。
+for (const assetDir of ["icons", "fonts", "yukkuri-sdk"] as const) {
   const src = join(repoRoot, assetDir);
+  if (!existsSync(src)) continue; // 缺目录说明 checkout 不全,不阻断编译
   const dest = join(distDir, assetDir);
-  if (!existsSync(src)) continue; // fonts/ 属仓库资产,缺失说明 checkout 不全,不阻断编译
-  mkdirSync(dest, { recursive: true });
-  let copied = 0;
-  for (const entry of readdirSync(src)) {
-    const srcPath = join(src, entry);
-    if (!statSync(srcPath).isFile()) continue;
-    copyFileSync(srcPath, join(dest, entry));
-    copied += 1;
-  }
-  console.log(`[sync-dist-assets] ${assetDir}: ${copied} files -> ${dest}`);
+  // Replace generated assets so removed/converted files cannot accumulate between builds.
+  if (dirname(resolve(dest)) !== resolve(distDir)) throw new Error(`Invalid asset destination: ${dest}`);
+  rmSync(dest, { recursive: true, force: true });
+  cpSync(src, dest, { recursive: true, force: true });
+  console.log(`[sync-dist-assets] ${assetDir} -> ${dest}`);
+}
+
+// koffi 的原生件:单文件 exe 里模块图是虚拟路径,koffi 只能靠 process.resourcesPath 下的
+// koffi/build/<平台>/koffi.node 找到它(见 media/yukkuri/native-shim.ts 的说明)。
+// 布局必须逐字对上 koffi 的搜索路径,少一层就退回「Cannot find the native Koffi module」。
+const koffiAddon = join(pcServerDir, "node_modules", "@koromix", "koffi-win32-x64", "win32_x64", "koffi.node");
+if (existsSync(koffiAddon)) {
+  const dest = join(distDir, "koffi", "build", "win32_x64");
+  cpSync(koffiAddon, join(dest, "koffi.node"), { force: true });
+  console.log(`[sync-dist-assets] koffi.node -> ${dest}`);
+} else {
+  console.log("[sync-dist-assets] 未找到 @koromix/koffi-win32-x64,跳过(该平台的油库里合成不可用)");
 }

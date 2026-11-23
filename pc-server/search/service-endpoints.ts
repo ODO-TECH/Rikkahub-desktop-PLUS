@@ -53,6 +53,8 @@ export const SEARCH_SERVICE_ENDPOINTS: Readonly<Record<string, SearchServiceEndp
   jina: { base: "https://s.jina.ai/", search: "", legacyFields: ["searchUrl"] },
   firecrawl: { base: "https://api.firecrawl.dev", search: "/v2/search" },
   grok: { base: "https://api.x.ai/v1", search: "/responses", legacyFields: ["customUrl"] },
+  // DeepSeek 官方工具 API(search/fetch 同一基址的两条路径,v1 前缀在路径里)。
+  deepseek: { base: "https://api.deepseek.com", search: "/v1/tools/search", fetch: "/v1/tools/fetch" },
 };
 
 type ServiceLike = Record<string, unknown>;

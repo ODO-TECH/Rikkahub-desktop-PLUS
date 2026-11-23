@@ -108,6 +108,68 @@ function SetCurrentButton({ current, onSelect }: { current: boolean; onSelect: (
   );
 }
 
+/** /api/tts/yukkuri-status 返回的 SDK 自检字段(后端 describeSdk 的子集)。 */
+interface YukkuriSdkStatus {
+  root: string;
+  rootIsAscii: boolean;
+  aqtk10: boolean;
+  k2k: boolean;
+  dic: boolean;
+  ready: boolean;
+  platformSupported: boolean;
+}
+
+/**
+ * 油库里(AquesTalk)本地引擎自检:填完目录当场知道缺什么。
+ *
+ * 这条信息只在本地引擎才需要 —— 在线服务缺 key 会在试听时报错,而 DLL 缺失是
+ * 「点了朗读没声音、什么提示都没有」那类最难查的故障。防抖 350ms:用户正在敲路径,
+ * 不该每敲一个字符就打一次后端。
+ */
+function YukkuriEngineStatus({ sdkPath }: { sdkPath: string }) {
+  const { t } = useTranslation();
+  const [status, setStatus] = React.useState<YukkuriSdkStatus | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    const timer = setTimeout(() => {
+      api
+        .get<{ sdk: YukkuriSdkStatus }>(`tts/yukkuri-status?sdkPath=${encodeURIComponent(sdkPath)}`)
+        .then((data) => {
+          if (alive) setStatus(data.sdk);
+        })
+        .catch(() => {
+          if (alive) setStatus(null);
+        });
+    }, 350);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [sdkPath]);
+
+  if (!status) return null;
+
+  const detailKey = !status.platformSupported
+    ? "settings:speech.yukkuri_status_platform"
+    : !status.rootIsAscii
+      ? "settings:speech.yukkuri_status_ascii"
+      : !(status.aqtk10 && status.k2k && status.dic)
+        ? "settings:speech.yukkuri_status_missing"
+        : "settings:speech.yukkuri_status_ready";
+
+  return (
+    <div className="flex items-start gap-2 px-3 py-2 text-xs">
+      <StatusBadge tone={status.ready ? "success" : "warning"}>
+        {t(status.ready ? "settings:speech.yukkuri_status_ok" : "settings:speech.yukkuri_status_bad")}
+      </StatusBadge>
+      <span className="min-w-0 flex-1 text-[var(--ds-text-secondary)]">
+        {t(detailKey, { root: status.root })}
+      </span>
+    </div>
+  );
+}
+
 function EmptyDetail({ text }: { text: string }) {
   return <SettingsEmpty size="md">{text}</SettingsEmpty>;
 }
@@ -433,6 +495,11 @@ export function TtsSection({
               <SettingsGroup fields>
                 <SpeechFields fields={fields} section="basic" draft={draft} onPatch={patchFields} />
               </SettingsGroup>
+
+              {/* 油库里是本地 DLL 合成:缺件不联网、不报错到日志里,直接在这行说清楚。 */}
+              {draft.type === "yukkuri" ? (
+                <YukkuriEngineStatus sdkPath={String(draft.sdkPath ?? "")} />
+              ) : null}
 
               {fields.some((field) => field.section === "advanced") ? (
                 <SettingsAdvancedSection

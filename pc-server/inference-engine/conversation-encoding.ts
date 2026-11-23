@@ -3,20 +3,23 @@
 // 纪律：纯搬迁自 server.ts（阶段 5.3d），行为不变。
 
 import type { ApiMessage, Assistant, Conversation, JsonValue, Message, Model } from "../foundation/types";
-import { applyPlaceholders, cloneJson, getStringArray, message, renderTemplate, textFromParts } from "../foundation/utils";
+import { applyPlaceholders, cloneJson, estimateTokens, getStringArray, message, renderTemplate, textFromParts } from "../foundation/utils";
 import { state } from "../persistence/json-store";
 import { frozenContextBlocks } from "./context-snapshots";
 import { buildSearchContext } from "../search";
 import { findModel } from "../model-providers";
+import { contextWindowFor, outputLimitFor } from "../model-providers/model-limits";
 import { listSkills } from "../tools/skills";
 import { conversationToolsWithDiscovery, toolDiscoverySystemContext } from "../tools/discovery-store";
 import { GOOGLE_SAFETY_SETTINGS, apiContentFromParts, apiContentText, appendAssistantApiMessages, googleContentsFromApiMessages, googleFunctionDeclarations, googleGenerationConfig, hasBuiltInTool, hostOfProvider, responseApiMessagesFromUiMessages, supportsAbility, supportsOutputModality } from "./message-builder";
 import { responsesHistoryReasoningAllowed } from "../model-providers/request-dialect";
 import { isEmptyAssistantPlaceholder } from "./parts";
 import { enrichMessages, templateVariables } from "./message-enrichment";
-import { findEffectiveCompaction, parseEngineCompactions, pinnedMessagesBefore } from "./engine-compaction";
+import { parseEngineCompactions, pinnedMessagesInRange, reserveTokensFor, resolveCompactionBlocks } from "./engine-compaction";
+import { modelsDevCache } from "./providers";
 import { readDynamicRecallBlock } from "../memory/dynamic-recall";
 import { readMoodInjectionBlock } from "../mood/injection";
+import { calibrationFactorFor } from "./token-calibration";
 
 // 消息模板/时间提醒/lorebook+模式注入/滞回截断 已上收至 message-enrichment.ts
 // (引擎无关层);本文件只负责"富化产物 → 三家 Provider 请求体"的编码。
@@ -33,6 +36,29 @@ You have access to the following skills. Use the \`use_skill\` tool to load a sk
 <available_skills>
 ${body}
 </available_skills>`;
+}
+
+/** 本轮会话模型的用量校准系数 k̂(S2)。模型解析与 conversationTransformedMessages 同源,
+ *  避免"估算用 A 模型、校准查 B 模型"。无样本 → 1,判定与引入前逐字节一致。
+ *  只给**判定**用(自动压缩触发/预算窗口/发送前硬闸);UI 圆环显示上游真实 usage,不乘。 */
+export function contextCalibrationFactor(assistant: Assistant): number {
+  const picked = findModel(assistant.chatModelId ?? state.settings.chatModelId);
+  // provider 可能为空(findModel 在零供应商配置时回退 Auto):无键即无样本,k̂=1。
+  return calibrationFactorFor(picked.provider?.id ?? "", picked.model.modelId);
+}
+
+/** 本轮请求携带的工具声明体积(token)。工具 schema 不在消息序列里,数消息永远数不到它
+ *  ——挂满 MCP 的助手可达上万 token,漏算会让自动压缩在真实窗口早已见底时仍不触发。
+ *  单源:预算 fixedTokens 与自动压缩触发估算共用本函数,口径不允许各写一份。
+ *  模型不支持 TOOL 时出线 tools 为空(与 orchestrator 四处装配同判定),计 0。 */
+export function toolDeclarationTokens(
+  assistant: Assistant,
+  model: Model,
+  conversationId?: string | null,
+): number {
+  if (!supportsAbility(model, "TOOL")) return 0;
+  const tools = conversationToolsWithDiscovery(assistant, model, conversationId);
+  return tools.length > 0 ? estimateTokens(JSON.stringify(tools)) : 0;
 }
 
 /** Google generateContent 的 tools 数组:内置工具优先(目前与函数工具互斥,镜像安卓
@@ -140,30 +166,86 @@ export function conversationTransformedMessages(
     ? message("SYSTEM", [{ type: "text", text: systemParts.join("\n\n") }])
     : null;
 
-  // 压缩(P9 双引擎统一):聊天引擎与 pi 共用同一份会话级记录——切点仍在选中路径的
-  // 最新一条生效(编辑/fork 删掉切点行 → 记录自动失效,退回全量原文,绝不丢历史)。
-  // 与 pi 的差别只在摘要承载方式:pi 把它交给引擎 appendCompaction,聊天引擎把摘要
-  // 合成一条 USER 行注入序列最前(enrichMessages 的 compactionSummary)。
-  const compaction = findEffectiveCompaction(
+  // 压缩(P9 双引擎统一 + S5 块化):聊天引擎与 pi 共用同一份会话级记录——切点仍在
+  // 选中路径的最新一条生效(编辑/fork 删掉切点行 → 记录自动失效,退回全量原文,绝不丢
+  // 历史)。与 pi 的差别只在摘要承载方式:pi 把它交给引擎 appendCompaction(扁平视图,
+  // 见 findEffectiveCompaction),聊天引擎把**每个生效块**各合成一条 USER 行并列注入
+  // 序列最前(enrichMessages 的 compactionBlocks)。块必须首尾相接,所以"各块原位"
+  // 就是序列最前,原文从最后一块的切点起逐字保留。
+  const compactionBlocks = resolveCompactionBlocks(
     parseEngineCompactions(conversation.engineCompactions),
     selectedMessages,
     () => true,
   );
-  // 阶段四:钉住的消息只补"切点之前"那部分——切点之后的钉住消息本来就在窗口里
+  // 阶段四:钉住的消息只补"本块切点之前"那部分——切点之后的钉住消息本来就在窗口里
   // 逐字可见,再注入一遍就是重复内容。工具型消息的纯文本可能为空,Skip。
-  const pinned = compaction
-    ? pinnedMessagesBefore(selectedMessages, compaction.cutMessageId)
-        .map((msg) => ({ role: msg.role, text: textFromParts(msg.parts).trim() }))
-        .filter((msg) => msg.text.length > 0)
-    : [];
+  // S5:按块归属,早期摘要行不会随新压缩不断变长(前缀缓存的前提)。
+  const summaryBlocks = compactionBlocks.map((block) => ({
+    summary: block.record.summary,
+    pinned: pinnedMessagesInRange(selectedMessages, block.startIndex, block.cutIndex)
+      .map((msg) => ({ role: msg.role, text: textFromParts(msg.parts).trim() }))
+      .filter((msg) => msg.text.length > 0),
+  }));
+  // 上下文预算(PC 专属,默认关):net 预算 = 模型真实窗口 − 压缩预留 − 系统面/工具声明。
+  // fixedTokens 只覆盖发送时恒定的部分(系统提示词 + 工具 declaration JSON);注入/提醒
+  // 由预留吸收。窗口未知 → 不猜,预算路不参与(与自动压缩同口径)。
+  const budgetConfig = state.settings.contextBudget;
+  const budgetEnabled = budgetConfig?.enabled === true;
+  const systemText = systemParts.join("\n\n");
+  // S4:有效窗口(模型窗口 − 本轮预留)与预算开关无关地算出来——常开应急截断要用它,
+  // 出厂设置(预算关)下也必须有溢出保护。窗口未知 → null,两条路都不猜。
+  // findModel 在"一个供应商都没配"时回退到 { provider: undefined, model: Auto },
+  // 窗口/预留/k̂ 全都无从算起:此时两条护栏都不参与,与引入前行为一致(不能裸解引用)。
+  const pickedProvider = picked.provider;
+  const modelWindow = pickedProvider
+    ? contextWindowFor(modelsDevCache, pickedProvider, picked.model.modelId)
+    : null;
+  const effectiveWindow = pickedProvider && modelWindow != null
+    ? Math.max(1, modelWindow - reserveTokensFor(modelWindow, outputLimitFor(modelsDevCache, pickedProvider, picked.model.modelId)))
+    : null;
+  // 发送时恒定、却不在消息序列里的体积:系统提示词面 + 工具 declaration JSON。
+  // 预算窗口与应急截断都要先把它扣掉,否则"消息序列刚好塞满窗口"会被误判为安全。
+  const fixedTokens = (systemText ? estimateTokens(systemText) : 0)
+    + toolDeclarationTokens(assistant, picked.model, conversation.id);
+  // S2:窗口是"真实 token 上限",而纯函数层累加的是本地估算。真实 ≈ k̂ × 本地,
+  // 所以把窗口除以 k̂ 即等价于把每条消息乘 k̂——不动纯函数层的口径。无样本时 k̂=1。
+  const calibrationFactor = pickedProvider
+    ? calibrationFactorFor(pickedProvider.id, picked.model.modelId)
+    : 1;
+  const budgetOptions = (() => {
+    if (!budgetEnabled || modelWindow == null || effectiveWindow == null) return undefined;
+    // S3:预留与自动压缩触发线同一函数(reserveTokensFor),两处不允许各写一份。
+    const netTokens = Math.max(1, effectiveWindow - fixedTokens);
+    // 至少 1:窗口被系统面/工具吃掉时也保留最后一条消息,超限由发送前硬闸报错。
+    return { tokens: Math.max(1, Math.floor(netTokens / calibrationFactor)) };
+  })();
+  const toolAging = budgetEnabled && budgetConfig?.toolAgingEnabled === true
+    ? { keepTurns: budgetConfig.toolAgingKeepTurns, excerptChars: budgetConfig.toolAgingExcerptChars }
+    : undefined;
+  // 工具结果头尾裁剪:PC-only 发送面能力,默认开。关闭时传 undefined,产物逐字节不变。
+  const resultClipConfig = state.settings.resultClip;
+  const resultClip = resultClipConfig?.enabled === true
+    ? {
+        thresholdChars: resultClipConfig.thresholdChars,
+        headChars: resultClipConfig.headChars,
+        tailChars: resultClipConfig.tailChars,
+      }
+    : undefined;
   const enriched = enrichMessages(selectedMessages, {
     conversation,
     assistant,
     model: picked.model,
-    windowStartMessageId: compaction?.cutMessageId,
-    compactionSummary: compaction?.summary,
-    pinnedMessages: pinned,
+    windowStartMessageId: compactionBlocks.at(-1)?.record.cutMessageId,
+    boundaryMessageId: conversation.contextBoundaryMessageId ?? undefined,
+    compactionBlocks: summaryBlocks,
     timeReminderAnchor: systemMessage ?? undefined,
+    contextBudget: budgetOptions,
+    toolAging,
+    resultClip,
+    // S4 常开:与 budgetEnabled 无关。窗口未知(effectiveWindow=null)时不传,不猜。
+    emergencyWindowTokens: effectiveWindow != null
+      ? Math.max(1, Math.floor((effectiveWindow - fixedTokens) / calibrationFactor))
+      : undefined,
   });
 
   // 系统位注入(before/after_system_prompt)并入 system 面:before 在前、after 在后,

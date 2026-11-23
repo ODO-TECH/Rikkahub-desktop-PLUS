@@ -108,7 +108,7 @@ export function AgentRunSchedules({ conversationId }: { conversationId: string |
   const [minutes, setMinutes] = React.useState(60);
   const [runAtLocal, setRunAtLocal] = React.useState("");
   const [formError, setFormError] = React.useState<string | null>(null);
-  const visible = agentLoop?.enabled === true && agentLoop.schedulingEnabled === true;
+  const visible = agentLoop?.schedulingEnabled === true;
 
   const load = React.useCallback(async () => {
     if (!conversationId) return;

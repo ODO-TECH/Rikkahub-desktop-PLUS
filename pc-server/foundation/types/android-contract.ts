@@ -26,13 +26,18 @@ export { PC_KNOWN_ASR_TYPES } from "./index";
 // - search/src/main/java/me/rerere/search/SearchService.kt   sealed SearchServiceOptions
 // - ai/src/main/java/me/rerere/ai/ui/UIMessagePart.kt        sealed UIMessagePart
 // - ai/src/main/java/me/rerere/ai/ui/UIMessageAnnotation.kt  sealed UIMessageAnnotation
-// - speech/.../tts/provider/TTSProviderSetting.kt            sealed TTSProviderSetting
-// - speech/.../asr/ASRProviderSetting.kt                     sealed ASRProviderSetting
+// - speech/src/main/java/me/rerere/tts/provider/TTSProviderSetting.kt  sealed TTSProviderSetting
+// - speech/src/main/java/me/rerere/asr/ASRProviderSetting.kt           sealed ASRProviderSetting
+//
+// 2026-11-18 随安卓上游 master(41d77f1e,提交 f361bbc1「新增 DeepSeek 语音合成与语音识别」)
+// 刷新:搜索服务 / TTS / ASR 三张集合各加 `deepseek`(@SerialName 逐字核对过 Kotlin 源码)。
+// 同批核对还发现 UIMessagePart 已有 `notice` 判别符而本快照没有——那是另一件事,未在本次
+// 范围内改动(本机缺 Reference-project/Rikkahub-Android,同步层只警告不报红,故长期沉睡)。
 
 export const ANDROID_SEARCH_SERVICE_TYPES: ReadonlySet<string> = new Set([
   "bing_local", "zhipu", "tavily", "exa", "searxng", "linkup", "brave", "metaso", "ollama",
   "perplexity", "firecrawl", "jina", "bocha", "rikkahub", "grok", "tinyfish", "serper", "custom_js",
-  "doubao",
+  "doubao", "deepseek",
 ]);
 
 /** 安卓 UIMessagePart 全判别符。含已 @Deprecated 但仍在 sealed 集合内的 search/tool_call/
@@ -47,9 +52,9 @@ export const ANDROID_ANNOTATION_TYPES: ReadonlySet<string> = new Set(["url_citat
 
 export const ANDROID_TTS_PROVIDER_TYPES: ReadonlySet<string> = new Set([
   "openai", "gemini", "system", "minimax", "qwen", "groq", "xai", "mimo",
-  "elevenlabs", "step", "fish-audio", "volcengine",
+  "elevenlabs", "step", "fish-audio", "volcengine", "deepseek",
 ]);
 
 export const ANDROID_ASR_PROVIDER_TYPES: ReadonlySet<string> = new Set([
-  "openai_realtime", "dashscope", "volcengine", "mimo", "step",
+  "openai_realtime", "dashscope", "volcengine", "mimo", "step", "deepseek",
 ]);

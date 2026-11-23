@@ -13,11 +13,23 @@
 import type { JsonValue } from "../foundation/types";
 import { isRecord } from "../foundation/utils";
 import { BUILTIN_FETCH_TOOL_NAME, builtinFetchToolDefinition, runBuiltinFetchTool } from "./mcp-builtin-fetch";
+import {
+  MOEGIRL_COMMENTS_TOOL_NAME,
+  MOEGIRL_GET_TOOL_NAME,
+  MOEGIRL_SEARCH_TOOL_NAME,
+  moegirlCommentsToolDefinition,
+  moegirlGetToolDefinition,
+  moegirlSearchToolDefinition,
+  runMoegirlCommentsTool,
+  runMoegirlGetTool,
+  runMoegirlSearchTool,
+} from "./mcp-builtin-moegirl";
 
 export const BUILTIN_MCP_TRANSPORT = "builtin";
 
 /** 与 stdio 同属「PC 专属」：导出到安卓备份时必须整条剥离。 */
 export const BUILTIN_FETCH_SERVER_ID = "builtin_fetch";
+export const BUILTIN_MOEGIRL_SERVER_ID = "builtin_moegirl";
 
 const BUILTIN_PROTOCOL_VERSION = "2025-06-18";
 const BUILTIN_SERVER_VERSION = "1.0.0";
@@ -38,6 +50,14 @@ const BUILTIN_SERVERS: Record<string, BuiltinServer> = {
   [BUILTIN_FETCH_SERVER_ID]: {
     serverName: "@rikkahub/fetch",
     tools: [{ name: BUILTIN_FETCH_TOOL_NAME, definition: builtinFetchToolDefinition, run: runBuiltinFetchTool }],
+  },
+  [BUILTIN_MOEGIRL_SERVER_ID]: {
+    serverName: "@rikkahub/moegirl",
+    tools: [
+      { name: MOEGIRL_SEARCH_TOOL_NAME, definition: moegirlSearchToolDefinition, run: runMoegirlSearchTool },
+      { name: MOEGIRL_GET_TOOL_NAME, definition: moegirlGetToolDefinition, run: runMoegirlGetTool },
+      { name: MOEGIRL_COMMENTS_TOOL_NAME, definition: moegirlCommentsToolDefinition, run: runMoegirlCommentsTool },
+    ],
   },
 };
 
@@ -121,3 +141,10 @@ export async function builtinMcpRequest(
 
 /** 内置 fetch 的工具名（模型侧带 mcp__ 前缀），测试与文档都用它，避免到处写字面量。 */
 export const BUILTIN_FETCH_TOOL_FULL_NAME = `mcp__${BUILTIN_FETCH_TOOL_NAME}`;
+
+/** 内置萌百的三个工具名（同样带 mcp__ 前缀），与上游 MoegirlMCP 的命名一致。 */
+export const BUILTIN_MOEGIRL_TOOL_FULL_NAMES = [
+  `mcp__${MOEGIRL_SEARCH_TOOL_NAME}`,
+  `mcp__${MOEGIRL_GET_TOOL_NAME}`,
+  `mcp__${MOEGIRL_COMMENTS_TOOL_NAME}`,
+] as const;

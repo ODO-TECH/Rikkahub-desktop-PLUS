@@ -59,11 +59,23 @@ const planInput = {
   steps: [{ id: "s1", content: "a", status: "pending" }],
 };
 
+test("plan context lists only completed successful calls from the selected branch", () => {
+  const tool=(toolCallId:string,output:unknown[]):Message["parts"][number]=>({type:"tool",toolCallId,toolName:"get_time_info",input:"{}",output,approvalState:{type:"auto"}} as Message["parts"][number]);
+  const context=findPlanContext(conversation([
+    node([message("USER",[])]),
+    node([message("ASSISTANT",[
+      tool("tc-success",[{type:"text",text:"time"}]),tool("tc-error",[{error:"failed"}]),tool("tc-pending",[]),
+    ]),message("ASSISTANT",[tool("tc-other-branch",[{type:"text",text:"other"}])])]),
+  ]));
+  expect(context.availableEvidence).toEqual([{toolCallId:"tc-success",toolName:"get_time_info"}]);
+});
+
 describe("findPlanContext", () => {
   test("没有计划:首次发布,允许设定目标", () => {
     expect(findPlanContext(conversation([node([message("USER", [])])]))).toEqual({
       previous: null,
       allowGoalChange: true,
+      availableEvidence: [],
     });
   });
 
@@ -87,7 +99,7 @@ describe("findPlanContext", () => {
         node([message("ASSISTANT", [])]),
       ]),
     );
-    expect(ctx).toEqual({ previous: null, allowGoalChange: true });
+    expect(ctx).toEqual({ previous: null, allowGoalChange: true, availableEvidence: [] });
   });
 
   test("当前工具调用不算自己的前值;同消息里的更早计划仍可作为基线", () => {
@@ -201,7 +213,7 @@ describe("latestPlan(完成校验的当前 run 计划)", () => {
       node([message("USER", [])]),
     ]);
     expect(latestPlan(conv)).toBeNull();
-    expect(findPlanContext(conv)).toEqual({ previous: null, allowGoalChange: true });
+    expect(findPlanContext(conv)).toEqual({ previous: null, allowGoalChange: true, availableEvidence: [] });
   });
 });
 

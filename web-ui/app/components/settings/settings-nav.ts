@@ -48,6 +48,7 @@ export const SETTINGS_NAV = [
       { id: "app", labelKey: "settings:subnav.general.app" },
     ],
   },
+  { id: "agent", labelKey: "settings:nav.agent", icon: Bot },
   { id: "assistants", labelKey: "settings:nav.assistants", icon: Bot },
   {
     id: "models",
@@ -121,7 +122,6 @@ export const SETTINGS_NAV = [
     children: [
       { id: "memory", labelKey: "settings:subnav.experiments.memory" },
       { id: "mood", labelKey: "settings:subnav.experiments.mood" },
-      { id: "agent-bot", labelKey: "settings:subnav.experiments.agent_bot" },
     ],
   },
   {
@@ -151,7 +151,10 @@ export type SettingsTabId = NavEntry["id"];
  * 表里多一页而注册表没挂组件,typecheck 当场报缺键。
  */
 export type SettingsPageKey = NavEntry extends infer E
-  ? E extends { readonly id: infer P extends string; readonly children: readonly { readonly id: infer S extends string }[] }
+  ? E extends {
+      readonly id: infer P extends string;
+      readonly children: readonly { readonly id: infer S extends string }[];
+    }
     ? `${P}/${S}`
     : E extends { readonly id: infer P extends string }
       ? P
@@ -180,7 +183,10 @@ export function settingsSubItems(section: SettingsTabId): readonly SettingsSubIt
 }
 
 /** 候选二级属于该一级则用之,否则落到第一个二级;无二级恒为 null。 */
-export function resolveSettingsSub(section: SettingsTabId, candidate: string | null | undefined): string | null {
+export function resolveSettingsSub(
+  section: SettingsTabId,
+  candidate: string | null | undefined,
+): string | null {
   const subs = settingsSubItems(section);
   if (subs.length === 0) return null;
   return subs.some((sub) => sub.id === candidate) ? candidate! : subs[0].id;
@@ -221,6 +227,8 @@ const LEGACY_PAGES: Record<string, SettingsLocation> = {
   "data/backup": { section: "data", sub: null },
   // 2026-11-01:实验区这一页对外改名 AgentBot(自主循环只是其中一部分),旧二级 id 继续可达。
   "experiments/agent-loop": { section: "experiments", sub: "agent-bot" },
+  // 2026-11-23:工作区工具整页并入 Agent,旧的「拓展 › 工作区工具」深链落到 Agent。
+  "extensions/workspace": { section: "agent", sub: null },
 };
 
 /**

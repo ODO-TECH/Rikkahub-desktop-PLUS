@@ -29,12 +29,14 @@
 /pc-server/assets/bash/
 /pc-server/assets/bash-bundle.tar.gz
 
-# pi/ 是本地浅克隆的上游 vendor（见 docs/BUILD.md）：仓库只跟踪 pi-patches/
-# 与 pi-model-data/，CI 与构建脚本按固定基线重建 pi/。
+# 完整 pi 源码不参与本版构建。
 /pi/
 
 # 依赖
 node_modules/
+.alpha*/
+.alpha*.log
+/alpha-evidence/
 
 # 日志与本地调试残留
 *.log

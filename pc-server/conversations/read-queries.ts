@@ -15,6 +15,8 @@ import { safeParseJsonArray } from "./index";
 export type ConversationMeta = Conversation;
 
 interface MetaRow {
+  conversation_kind?: "agent" | "chat";
+  execution_mode?: "agent" | "chat";
   id: string;
   assistant_id: string;
   title: string;
@@ -28,6 +30,7 @@ interface MetaRow {
   workspace_id: string | null;
   workspace_cwd: string | null;
   engine_compactions: string | null;
+  context_boundary_message_id?: string | null;
 }
 
 function parseIdArray(raw: string | undefined): string[] {
@@ -58,12 +61,15 @@ function rowToMeta(row: MetaRow): ConversationMeta {
     modeInjectionIds: parseIdArray(row.mode_injection_ids),
     lorebookIds: parseIdArray(row.lorebook_ids),
     workspaceId: row.workspace_id ?? null,
+    conversationKind: row.conversation_kind === "chat" ? "chat" : "agent",
+    executionMode: row.execution_mode === "chat" ? "chat" : "agent",
     workspaceCwd: row.workspace_cwd ?? null,
     engineCompactions: safeParseJsonArray(row.engine_compactions),
+    contextBoundaryMessageId: row.context_boundary_message_id ?? null,
   };
 }
 
-const META_COLUMNS = "id, assistant_id, title, system_prompt, suggestions, is_pinned, create_at, update_at, mode_injection_ids, lorebook_ids, workspace_id, workspace_cwd, engine_compactions";
+const META_COLUMNS = "id, assistant_id, title, system_prompt, suggestions, is_pinned, create_at, update_at, mode_injection_ids, lorebook_ids, workspace_id, workspace_cwd, engine_compactions, execution_mode, conversation_kind, context_boundary_message_id";
 
 /**
  * 某助手的全部会话元数据，ORDER BY create_at DESC, id DESC——

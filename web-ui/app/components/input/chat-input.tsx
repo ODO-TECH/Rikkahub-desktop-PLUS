@@ -1,6 +1,22 @@
 import * as React from "react";
 
-import { ArrowUp, File, FileDown, Image, LoaderCircle, Mic, PhoneCall, Plus, Sparkles, Square, TriangleAlert, Undo2, Video, X, Zap } from "lucide-react";
+import {
+  ArrowUp,
+  File,
+  FileDown,
+  Image,
+  LoaderCircle,
+  Mic,
+  PhoneCall,
+  Plus,
+  Sparkles,
+  Square,
+  TriangleAlert,
+  Undo2,
+  Video,
+  X,
+  Zap,
+} from "lucide-react";
 import { startMicCapture } from "~/lib/voice/mic-capture";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -12,14 +28,22 @@ import { MemoryBadge } from "~/components/memory/memory-badge";
 import { CompressContextIcon } from "~/components/icons/compress-context-icon";
 import { ExtensionPickerButton } from "~/components/input/extension-picker";
 import { MediaStudioButton } from "~/components/media-studio/media-studio-button";
-import { CommandHighlightOverlay, SlashCommandMenu, TEXTAREA_METRICS } from "~/components/input/slash-command-menu";
+import {
+  CommandHighlightOverlay,
+  SlashCommandMenu,
+  TEXTAREA_METRICS,
+} from "~/components/input/slash-command-menu";
 import { WorkspacePermissionPicker } from "~/components/input/workspace-permission-picker";
-import { WorkspaceFilesButton } from "~/components/input/workspace-files-button";
 import { useSlashCommand } from "~/hooks/use-slash-command";
 import { parseSlashCommand, type SlashCommandDto } from "~/lib/slash-commands";
 import { useChatInputStore, useSettingsStore } from "~/stores";
 import { Button } from "~/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "~/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { Textarea } from "~/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "~/components/ui/tooltip";
 import { resolveFileUrl } from "~/lib/files";
@@ -28,6 +52,8 @@ import { DOCUMENT_UPLOAD_ACCEPT, uploadFilesToDraft } from "~/lib/upload";
 import { cn } from "~/lib/utils";
 import api, { appendWebAuthQuery } from "~/services/api";
 import type { ExtractionStatusDto, UIMessagePart } from "~/types";
+// 零运行时依赖的后端类型模块(与 PC_KNOWN_ASR_TYPES 同源),前端可直接引值。
+import { PC_SEGMENTED_HTTP_ASR_TYPES } from "@server/foundation/types";
 
 export interface ChatInputProps {
   value: string;
@@ -134,7 +160,15 @@ function ProgressRing({ percent }: { percent: number | null }) {
   if (percent == null) {
     return (
       <svg className="size-3.5 shrink-0 animate-spin text-primary" viewBox="0 0 14 14">
-        <circle cx="7" cy="7" r={radius} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+        <circle
+          cx="7"
+          cy="7"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeOpacity="0.25"
+          strokeWidth="2"
+        />
         <circle
           cx="7"
           cy="7"
@@ -151,7 +185,15 @@ function ProgressRing({ percent }: { percent: number | null }) {
   const clamped = Math.max(0, Math.min(100, percent));
   return (
     <svg className="size-3.5 shrink-0 -rotate-90 text-primary" viewBox="0 0 14 14">
-      <circle cx="7" cy="7" r={radius} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+      <circle
+        cx="7"
+        cy="7"
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity="0.25"
+        strokeWidth="2"
+      />
       <circle
         cx="7"
         cy="7"
@@ -169,7 +211,10 @@ function ProgressRing({ percent }: { percent: number | null }) {
 
 /** 专题4:附件的后台提取状态轮询。上传即时返回后,服务端在子进程里提取全文,
  *  这里每 600ms 轮询 files/:id/extraction 直到终态(done/empty/failed/none)。 */
-function useExtractionStatus(fileId: number | null, isDocument: boolean): ExtractionStatusDto | null {
+function useExtractionStatus(
+  fileId: number | null,
+  isDocument: boolean,
+): ExtractionStatusDto | null {
   const [status, setStatus] = React.useState<ExtractionStatusDto | null>(null);
   React.useEffect(() => {
     if (fileId == null || !isDocument) return;
@@ -229,7 +274,9 @@ function ExtractionBadge({ part }: { part: UIMessagePart }) {
     );
   }
   if (status.status === "failed" || status.status === "empty") {
-    const title = t(status.status === "failed" ? "chat.extraction_failed" : "chat.extraction_empty");
+    const title = t(
+      status.status === "failed" ? "chat.extraction_failed" : "chat.extraction_empty",
+    );
     return (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -389,8 +436,15 @@ function ChatInputInner({
   const [imeComposing, setImeComposing] = React.useState(false);
   const commandOverlayRef = React.useRef<HTMLDivElement | null>(null);
   const slashEnabled =
-    ready && !disabled && !isGenerating && !isEditing && attachments.length === 0 && Boolean(onSlashCommand);
-  const availableSlashCommands = slashEnabled ? (slashCommands ?? EMPTY_SLASH_COMMANDS) : EMPTY_SLASH_COMMANDS;
+    ready &&
+    !disabled &&
+    !isGenerating &&
+    !isEditing &&
+    attachments.length === 0 &&
+    Boolean(onSlashCommand);
+  const availableSlashCommands = slashEnabled
+    ? (slashCommands ?? EMPTY_SLASH_COMMANDS)
+    : EMPTY_SLASH_COMMANDS;
   const slash = useSlashCommand({
     text: value,
     commands: availableSlashCommands,
@@ -483,7 +537,19 @@ function ChatInputInner({
     } finally {
       setSubmitting(false);
     }
-  }, [actionDisabled, canSend, canStop, isGenerating, onSend, onSlashCommand, onStop, onValueChange, parsedCommand, t, value]);
+  }, [
+    actionDisabled,
+    canSend,
+    canStop,
+    isGenerating,
+    onSend,
+    onSlashCommand,
+    onStop,
+    onValueChange,
+    parsedCommand,
+    t,
+    value,
+  ]);
 
   const handleOptimize = React.useCallback(async () => {
     const original = value.trim();
@@ -609,7 +675,11 @@ function ChatInputInner({
       const socket = new WebSocket(websocketApiUrl("asr/realtime"));
       socket.binaryType = "arraybuffer";
       asrSocketRef.current = socket;
-      asrMimoRef.current = provider.type === "mimo";
+      // HTTP 分段家族(MiMo / DeepSeek)的最后一段是异步上传的:stop 后必须等 status:idle
+      // 再关 socket,否则收尾那句丢。成员清单单源 = @server PC_SEGMENTED_HTTP_ASR_TYPES。
+      asrMimoRef.current = (PC_SEGMENTED_HTTP_ASR_TYPES as readonly string[]).includes(
+        String(provider.type ?? ""),
+      );
       const targetSampleRate = Math.max(
         8000,
         Number(provider.sampleRate || (provider.type === "openai_realtime" ? 24000 : 16000)),
@@ -761,7 +831,16 @@ function ChatInputInner({
       event.preventDefault();
       void handlePrimaryAction();
     },
-    [handlePrimaryAction, hasParsingAttachments, isEditing, isGenerating, onCancelEdit, sendOnEnter, slash.handleMenuKeyDown, t],
+    [
+      handlePrimaryAction,
+      hasParsingAttachments,
+      isEditing,
+      isGenerating,
+      onCancelEdit,
+      sendOnEnter,
+      slash.handleMenuKeyDown,
+      t,
+    ],
   );
 
   const handleUploadInputChange = React.useCallback(
@@ -833,7 +912,9 @@ function ChatInputInner({
 
   return (
     <div className={className}>
-      <div className="relative mx-auto w-full max-w-3xl px-4 py-4">
+      {/* pt 刻意收紧:档位/计划行已在父级贴着本卡渲染,顶部只留拖拽手柄的呼吸位;
+          底部的 pb 仍给发送提示文案留空间。 */}
+      <div className="relative mx-auto w-full max-w-3xl px-4 pt-2 pb-4">
         {/* 可拖拽的上沿手柄：上下拖改变输入框高度（左右锁定）。对标微信等桌面聊天
             应用，让用户按需放大/收起输入区，尺寸跨会话与重启保留。 */}
         <div
@@ -1116,8 +1197,9 @@ function ChatInputInner({
                 draftKey={draftKey}
                 disabled={!ready || disabled}
               />
-              <WorkspaceFilesButton conversationId={conversationId} />
-              {/* 权限档位收在左组末尾、工作目录右侧(2026-10-26 定位:图标群之后,文字胶囊垫底)。 */}
+              {/* 权限档位收在左组末尾(2026-10-26 定位:图标群之后,文字胶囊垫底)。
+                  文件面板入口只在顶部右侧的 PanelRight,输入条不再放文件树图标
+                  (2026-11-23 用户反馈:这一排图标太杂)。 */}
               <WorkspacePermissionPicker />
             </div>
             <div className="relative flex min-w-0 shrink items-center gap-1">
@@ -1168,9 +1250,7 @@ function ChatInputInner({
                 type="button"
                 variant="ghost"
                 size="icon"
-                disabled={
-                  isGenerating || !isEmpty ? actionDisabled : !canUseAsr && !asrListening
-                }
+                disabled={isGenerating || !isEmpty ? actionDisabled : !canUseAsr && !asrListening}
                 title={
                   isGenerating
                     ? isEmpty

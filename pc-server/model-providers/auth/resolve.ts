@@ -5,8 +5,8 @@
 //                   产出归一成 { headers, baseUrl } 供各引擎注入。
 // 这是「刷新权唯一在核心」的落地:引擎永不自己刷新,只拿短命 access。
 
-import { defaultProviderAuthContext } from "../../../pi/packages/ai/src/auth/context.ts";
-import { resolveProviderAuth } from "../../../pi/packages/ai/src/auth/resolve.ts";
+import { defaultProviderAuthContext } from "../../../vendor/pi-auth/auth/context.ts";
+import { resolveProviderAuth } from "../../../vendor/pi-auth/auth/resolve.ts";
 import type { Provider } from "../../foundation/types";
 import { providerHeaders } from "../index";
 import { createPiCredentialStore } from "./credential-store";

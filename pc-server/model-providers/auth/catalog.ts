@@ -7,13 +7,15 @@
 // 形状经 model()+enrichModel 与「获取模型列表」产出的模型完全同构(UUID id、大写模态、
 // TOOL/REASONING 能力位),下游选择器/引擎不需要知道它来自目录。
 
-import type { Api, Model as PiModel } from "../../../pi/packages/ai/src/types.ts";
-import { type BuiltinProvider, getBuiltinModels } from "../../../pi/packages/ai/src/providers/all.ts";
+type CatalogModel = {id:string;name:string;reasoning:boolean;input:string[]};
+import catalog from "./model-catalog.json";
+type BuiltinProvider = keyof typeof catalog;
+const getBuiltinModels = (id: BuiltinProvider) => catalog[id] ?? [];
 import type { Model, OAuthFlowId } from "../../foundation/types";
 import { enrichModel, model } from "../index";
 import { OAUTH_FLOWS } from "./flows";
 
-function toHostModel(entry: PiModel<Api>, existingId?: string): Model {
+function toHostModel(entry: CatalogModel, existingId?: string): Model {
   const base = model(entry.id, entry.name || entry.id);
   return enrichModel({
     ...base,
@@ -43,7 +45,7 @@ export function bundledModelsFor(
   const existingIdByModelId = new Map(existing.map((m) => [m.modelId, m.id]));
   const seen = new Set<string>();
   const models: Model[] = [];
-  for (const entry of getBuiltinModels(piProviderId) as PiModel<Api>[]) {
+  for (const entry of getBuiltinModels(piProviderId) as unknown as CatalogModel[]) {
     if (seen.has(entry.id)) continue;
     if (whitelist && !whitelist.includes(entry.id)) continue;
     seen.add(entry.id);

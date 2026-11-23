@@ -1,251 +1,98 @@
-// 设置 › 实验功能 › AgentBot。
-// 命名口径：对外（设置项名称）统一叫 AgentBot——一个较大的实验性能力，自主循环只是它的
-// 一小部分（还有运行记录、判定终局、传输重试，后续会加任务生命周期与调度）。
-// 存储与接口暂沿用 agentLoop / settings/agent-loop：改名只动展示面，避免无谓的数据迁移。
-// 页面层级：AgentBot 是实验功能本体，页顶只放两颗开关（启用 AgentBot / 传输重试，单个
-// 开关不套折叠）；「自主循环」是它的第一个板块，做成卡内折叠区，后续板块（任务生命周期、
-// 调度）各自成一块平级排在下面。
-// 纪律：与「记忆与上下文」「心情」实验平级成页，开关不塞进对方的卡片里。
-// 总开关默认关闭——关闭时两条引擎通路与改动前逐字一致（不记 run、不判定、不重试）。
-// transportRetry 是"零输出失败窗口"的稳定性修复，独立于总开关生效（见方案 §4.3）。
-import * as React from "react";
-import { useTranslation } from "react-i18next";
-import { FlaskConical } from "lucide-react";
+﻿import * as React from "react";
+import { Bot } from "lucide-react";
 import { toast } from "sonner";
-
-import api, { isApiNotFound } from "~/services/api";
+import api from "~/services/api";
 import type { AgentLoopSettings } from "~/types";
+import type { SettingsSectionProps } from "~/components/settings/settings-registry";
 import {
   SettingsFold,
   SettingsGroup,
-  SettingsRow,
   SettingsRows,
   SettingsStack,
   SettingsSwitchRow,
 } from "~/components/settings/shared";
-import { Input } from "~/components/ui/input";
-import type { SettingsSectionProps } from "~/components/settings/settings-registry";
-import { AgentBotAuditSection } from "~/components/settings/experiments/agent-bot-audit";
+import { WorkspaceToolsSection } from "~/components/settings/extensions/workspace";
+import { AgentBotAuditSection } from "./agent-bot-audit";
 
-const DEFAULT_SETTINGS: AgentLoopSettings = {
-  enabled: false,
+const defaults: AgentLoopSettings = {
+  enabled: true,
   transportRetry: true,
   maxReplans: 2,
   stallRepeatLimit: 3,
   sameErrorLimit: 3,
   requireVerifiedCompletion: true,
+  roundBudgetTokens: 0,
   schedulingEnabled: false,
 };
-
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/** 失焦 / 回车提交的数字输入：避免每敲一个数字就发一次设置请求。 */
-function NumberField({
-  value,
-  min,
-  max,
-  disabled,
-  ariaLabel,
-  onCommit,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  disabled?: boolean;
-  ariaLabel: string;
-  onCommit: (value: number) => void;
-}) {
-  const [text, setText] = React.useState(String(value));
-  const [focused, setFocused] = React.useState(false);
-  React.useEffect(() => {
-    if (!focused) setText(String(value));
-  }, [value, focused]);
-  const commit = () => {
-    const parsed = Number(text);
-    if (!Number.isFinite(parsed)) {
-      setText(String(value));
-      return;
-    }
-    const next = Math.min(max, Math.max(min, Math.round(parsed)));
-    setText(String(next));
-    if (next !== value) onCommit(next);
-  };
-  return (
-    <Input
-      className="w-24 text-right tabular-nums"
-      inputMode="numeric"
-      aria-label={ariaLabel}
-      value={text}
-      disabled={disabled}
-      onChange={(event) => setText(event.target.value)}
-      onFocus={() => setFocused(true)}
-      onBlur={() => {
-        setFocused(false);
-        commit();
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur();
-        }
-      }}
-    />
-  );
-}
-
 export function AgentBotSection({ settings, onSettings }: SettingsSectionProps) {
-  const { t } = useTranslation();
-  const current = settings.agentLoop ?? DEFAULT_SETTINGS;
-
+  const current = settings.agentLoop ?? defaults;
+  const [audit, setAudit] = React.useState(false);
   const patch = async (partial: Partial<AgentLoopSettings>) => {
-    const previous = settings.agentLoop ?? DEFAULT_SETTINGS;
     try {
-      const response = await api.post<{ agentLoop: AgentLoopSettings }>(
-        "settings/agent-loop",
-        partial,
-      );
+      const response = await api.post<{ agentLoop: AgentLoopSettings }>("settings/agent-loop", {
+        ...partial,
+        enabled: true,
+      });
       onSettings({ ...settings, agentLoop: response.agentLoop });
-    } catch (err) {
-      onSettings({ ...settings, agentLoop: previous });
-      // 404 = 后端压根没有这个接口：界面是新的、程序是旧的（只换了前端没换 exe）。
-      // 报 "Not found" 用户无法自救，这里直接说清是版本错配。
-      toast.error(
-        isApiNotFound(err)
-          ? t("settings:experiments.agent_bot.stale_backend")
-          : errorText(err),
-      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
     }
   };
-
-  const off = !current.enabled;
-  // 板块折叠状态由本页持有：切走再回来复位为收起（与其他设置页的高级区一致）。
-  const [loopOpen, setLoopOpen] = React.useState(false);
-  const [auditOpen, setAuditOpen] = React.useState(false);
-
   return (
     <SettingsStack>
-      <div className="flex gap-3 rounded-[var(--ds-radius-md)] border border-[var(--ds-divider)] px-4 py-3">
-        <FlaskConical aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--ds-text-tertiary)]" />
-        <div className="min-w-0 space-y-1">
-          <p className="text-sm font-medium text-[var(--ds-text-primary)]">
-            {t("settings:experiments.agent_bot.notice_title")}
-          </p>
-          <p className="text-xs text-[var(--ds-text-secondary)]">
-            {t("settings:experiments.agent_bot.notice_desc")}
+      <div className="flex items-start gap-3 py-2">
+        <Bot className="mt-1 size-5 text-primary" />
+        <div>
+          <p className="font-medium">Agent⑨</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            新对话默认使用 Agent。同一会话可切换纯对话，历史与附件保留。工具执行沿用现有审批规则。
           </p>
         </div>
       </div>
-
-      <SettingsGroup
-        title={t("settings:experiments.agent_bot.master_title")}
-        description={t("settings:experiments.agent_bot.master_desc")}
-      >
+      <SettingsGroup title="运行" description="轻量内核统一管理有限重试、上下文压缩和子任务。">
         <SettingsRows>
           <SettingsSwitchRow
-            label={t("settings:experiments.agent_bot.enable")}
-            description={t("settings:experiments.agent_bot.enable_desc")}
-            checked={current.enabled}
-            onCheckedChange={(checked) => void patch({ enabled: checked })}
-          />
-          <SettingsSwitchRow
-            label={t("settings:experiments.agent_bot.transport_retry")}
-            description={t("settings:experiments.agent_bot.transport_retry_desc")}
+            label="网络失败重试"
+            description="仅在尚未输出内容时重试，最多两次。"
             checked={current.transportRetry}
-            onCheckedChange={(checked) => void patch({ transportRetry: checked })}
+            onCheckedChange={(v) => void patch({ transportRetry: v })}
           />
           <SettingsSwitchRow
-            label={t("settings:experiments.agent_bot.scheduling")}
-            description={t("settings:experiments.agent_bot.scheduling_desc")}
-            checked={current.schedulingEnabled}
-            disabled={!current.enabled}
-            onCheckedChange={(checked) => void patch({ schedulingEnabled: checked })}
-          />
-        </SettingsRows>
-      </SettingsGroup>
-
-      {/* 自主循环只是 AgentBot 的一个板块：折叠成一块，收起时标题行仍露出阈值摘要，
-          总开关关闭时摘要直接写「未启用」，不必点开就知道现状。 */}
-      <SettingsFold
-        id="agent-bot-loop"
-        title={t("settings:experiments.agent_bot.fold_loop")}
-        description={t("settings:experiments.agent_bot.fold_loop_desc")}
-        summary={
-          off
-            ? t("settings:experiments.agent_bot.fold_loop_off")
-            : t("settings:experiments.agent_bot.fold_loop_summary", {
-                maxReplans: current.maxReplans,
-                stallRepeatLimit: current.stallRepeatLimit,
-                sameErrorLimit: current.sameErrorLimit,
-              })
-        }
-        open={loopOpen}
-        onOpenChange={setLoopOpen}
-      >
-        <SettingsRows>
-          <SettingsSwitchRow
-            label={t("settings:experiments.agent_bot.require_verified")}
-            description={t("settings:experiments.agent_bot.require_verified_desc")}
+            label="验证计划完成"
+            description="任务计划中还有未完成或缺少证据的步骤时，要求 Agent 继续核实。"
             checked={current.requireVerifiedCompletion}
-            disabled={off}
-            onCheckedChange={(checked) => void patch({ requireVerifiedCompletion: checked })}
+            onCheckedChange={(v) => void patch({ requireVerifiedCompletion: v })}
           />
-          <SettingsRow
-            label={t("settings:experiments.agent_bot.max_replans")}
-            description={t("settings:experiments.agent_bot.max_replans_desc")}
-            control={
-              <NumberField
-                value={current.maxReplans}
-                min={0}
-                max={10}
-                disabled={off}
-                ariaLabel={t("settings:experiments.agent_bot.max_replans")}
-                onCommit={(value) => void patch({ maxReplans: value })}
-              />
-            }
-          />
-          <SettingsRow
-            label={t("settings:experiments.agent_bot.stall_repeat_limit")}
-            description={t("settings:experiments.agent_bot.stall_repeat_limit_desc")}
-            control={
-              <NumberField
-                value={current.stallRepeatLimit}
-                min={2}
-                max={20}
-                disabled={off}
-                ariaLabel={t("settings:experiments.agent_bot.stall_repeat_limit")}
-                onCommit={(value) => void patch({ stallRepeatLimit: value })}
-              />
-            }
-          />
-          <SettingsRow
-            label={t("settings:experiments.agent_bot.same_error_limit")}
-            description={t("settings:experiments.agent_bot.same_error_limit_desc")}
-            control={
-              <NumberField
-                value={current.sameErrorLimit}
-                min={2}
-                max={20}
-                disabled={off}
-                ariaLabel={t("settings:experiments.agent_bot.same_error_limit")}
-                onCommit={(value) => void patch({ sameErrorLimit: value })}
-              />
-            }
+          <SettingsSwitchRow
+            label="定时任务"
+            description="允许已创建的定时任务启动 Agent；每项任务仍可单独停用。"
+            checked={current.schedulingEnabled}
+            onCheckedChange={(v) => void patch({ schedulingEnabled: v })}
           />
         </SettingsRows>
-      </SettingsFold>
-
-      {/* 生命周期 L4:运行审计(跨会话只读)。与运行面板同源,不复制详情模型。 */}
+        <p className="pt-3 text-xs text-muted-foreground">
+          每次运行最多 48 步，共享最多 96
+          次模型请求；子任务默认一层、最多两个同时运行。重复失败会停止并保留结果。
+        </p>
+      </SettingsGroup>
       <SettingsFold
-        id="agent-bot-audit"
-        title={t("settings:experiments.agent_bot.audit_title")}
-        description={t("settings:experiments.agent_bot.audit_desc")}
-        summary={t("settings:experiments.agent_bot.audit_summary")}
-        open={auditOpen}
-        onOpenChange={setAuditOpen}
+        id="agent-audit"
+        title="运行记录"
+        description="查看状态、失败原因和任务来源。"
+        open={audit}
+        onOpenChange={setAudit}
       >
         <AgentBotAuditSection />
       </SettingsFold>
+      {/* 原「拓展 › 工作区工具」整页并入 Agent(2026-11-23 用户反馈)。 */}
+      <SettingsGroup
+        title="工作区工具"
+        description="程序化工具（PTC）与工具契约开关；改动即时保存。"
+      >
+        <div className="pt-3">
+          <WorkspaceToolsSection settings={settings} onSettings={onSettings} />
+        </div>
+      </SettingsGroup>
     </SettingsStack>
   );
 }

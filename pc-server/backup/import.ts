@@ -1,5 +1,8 @@
 // backup/import.ts — 备份导入（PC json/zip 与 Android zip，含 Android 会话/文件/记忆导入）
 // 纪律：Android 互导契约（FTS5 影子表排除、MemoryEntity、settings 合并、迁移常量）冻结，只准原样搬迁。
+// 例外（显式申辩）：Room 28+ 把 MemoryEntity 换成 memory_file（Markdown 记忆），旧读写路径在
+// 3.x 备份上会静默丢全部记忆。表在场探测 + 新表优先属于「跟进上游迁移」的契约修复，见
+// importAndroidConversations / backup/export.ts insertMemoriesIntoDb 的块注释。
 // 部分辅助暂经 ../server 导入，3.5 拆 api/ 时收敛。
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -15,7 +18,12 @@ import { tempDir } from "../foundation/platform";
 import { CONVERSATIONS_SQLITE_MIGRATION, MEMORY_FILE_SPLIT_MIGRATION, saveState, setState, state } from "../persistence/json-store";
 import { GLOBAL_MEMORY_ID, memoryStore } from "../memory/index";
 import { invalidateContextSnapshots } from "../inference-engine/context-snapshots";
-import { clearConvDirtyState, DEFAULT_ASSISTANT_ID, getConversationsDb, loadAllConversationsFromDb, loadConversationNodesFromDb, resetConversationsDbTo, snapshotConversationsDbBeforeImport } from "../conversations";
+import { clearConvDirtyState, DEFAULT_ASSISTANT_ID, getConversationsDb, loadAllConversationsFromDb, loadConversationNodesFromDb, resetConversationsDbTo, selectedConversationMessages, snapshotConversationsDbBeforeImport } from "../conversations";
+import { findAssistant } from "../assistants";
+import { findModel } from "../model-providers";
+import { contextWindowFor } from "../model-providers/model-limits";
+import { modelsDevCache } from "../inference-engine/providers";
+import { conversationTokens } from "../inference-engine/context-budget";
 import { reportError } from "../observability/app-errors";
 import { hashFileSha256, rewriteAndroidFileUrlsDeep, rewritePcFileUrlsDeep } from "./file-refs";
 import { clearWorkingSet } from "../conversations/working-set";
@@ -60,10 +68,74 @@ export interface ImportReport {
   /** 备份声称有会话库、但读取失败(settings 已降级恢复,会话丢)——独立字段供明确文案。 */
   dbReadError: string | null;
   messageNodesUnreadable: number;
+  /** S5:逐会话体积体检(只报告不改数据)。按 estTokens 倒序;老调用方无此字段视为空。 */
+  contextAudit?: ContextAuditEntry[];
+  /** S9:备份声明但包里缺失的附件数(Kelivo asset_rows 指向不存在的 upload 文件)。 */
+  filesMissing?: number;
+}
+
+/** 导入体检的一条:这个会话接着聊要注入多少。overWindow 由目标助手模型的真实窗口判定,
+ *  窗口未知时退回 200K 绝对阈值(与「不猜」纪律一致:给提示,不阻断)。 */
+export interface ContextAuditEntry {
+  conversationId: string;
+  title: string;
+  messages: number;
+  /** parts JSON 的 UTF-8 字节数(体积口径,非精确 token)。 */
+  bytes: number;
+  estTokens: number;
+  overWindow: boolean;
 }
 
 export function newImportReport(): ImportReport {
-  return { filesDeduped: 0, dbReadError: null, messageNodesUnreadable: 0 };
+  return { filesDeduped: 0, dbReadError: null, messageNodesUnreadable: 0, contextAudit: [] };
+}
+
+const CONTEXT_AUDIT_ABSOLUTE_LIMIT = 200_000;
+
+/** 解析上游 Markdown 记忆(Room 28+ `memory_file.content`):跳过 frontmatter,逐条取
+ *  `- [tag] 内容` 行;没有条目时退化为整篇(去 frontmatter)一条。
+ *  格式实证见 rikkelivo `_memory_entity_to_files`/`_memory_files_to_entities` 与上游迁移。 */
+export function parseMemoryProfileMarkdown(content: string): string[] {
+  const items: string[] = [];
+  let inFrontMatter = false;
+  let frontMatterDone = false;
+  for (const raw of String(content ?? "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!frontMatterDone && line === "---") {
+      inFrontMatter = !inFrontMatter;
+      if (!inFrontMatter) frontMatterDone = true;
+      continue;
+    }
+    if (inFrontMatter) continue;
+    if (!line.startsWith("- ")) continue;
+    let item = line.slice(2).trim();
+    const tag = item.match(/^\[[^\]]+\]\s*/);
+    if (tag) item = item.slice(tag[0].length).trim();
+    if (item) items.push(item);
+  }
+  if (items.length === 0) {
+    const stripped = String(content ?? "").replace(/^---[\s\S]*?---\s*/, "").trim();
+    if (stripped) items.push(stripped);
+  }
+  return items;
+}
+
+/** 对本次导入的会话逐条估体积;只读,不改任何会话字段。导出供测试与后续导入报告复用。 */
+export function auditConversationContext(conversations: Conversation[]): ContextAuditEntry[] {
+  const entries: ContextAuditEntry[] = [];
+  for (const conv of conversations) {
+    const messages = selectedConversationMessages(conv);
+    if (messages.length === 0) continue;
+    const bytes = messages.reduce((sum, msg) => sum + Buffer.byteLength(JSON.stringify(msg.parts ?? []), "utf8"), 0);
+    const estTokens = conversationTokens(messages);
+    const assistant = state.settings.assistants.length > 0 ? findAssistant(state.settings.assistants, conv.assistantId) : null;
+    const picked = findModel(assistant?.chatModelId ?? state.settings.chatModelId);
+    // 窗口未知(未配置供应商 / 目录无该模型)→ null,退到绝对阈值。
+    const window = picked.provider ? contextWindowFor(modelsDevCache, picked.provider, picked.model.modelId) : null;
+    const overWindow = window != null ? estTokens > window : estTokens > CONTEXT_AUDIT_ABSOLUTE_LIMIT;
+    entries.push({ conversationId: conv.id, title: conv.title, messages: messages.length, bytes, estTokens, overWindow });
+  }
+  return entries.sort((left, right) => right.estTokens - left.estTokens);
 }
 
 /** 安卓设置导入时「PC 拥有、安卓不拥有」的顶层设置键:一律以导入前的 PC 现值为准。
@@ -88,6 +160,10 @@ export const PC_ONLY_SETTINGS_PRESERVED_ON_ANDROID_IMPORT = [
   // 模型场景档与 PC 先行开关
   "chatAutoCompact",
   "titleGenerationEnabled",
+  // DeepSeek 官方 OCR(OCR 栏目下的可选引擎):安卓无对应字段,且 apiKey 属凭据。
+  "deepseekOcrEnabled",
+  "deepseekOcrApiKey",
+  "deepseekOcrPurpose",
   "promptOptimizeModelId",
   "promptOptimizePrompt",
   "embeddingModelId",
@@ -104,6 +180,11 @@ export const PC_ONLY_SETTINGS_PRESERVED_ON_ANDROID_IMPORT = [
   "subagent",
   "workspaceTools",
   "agentLoop",
+  "contextBudget",
+  "contextTools",
+  "debugServer",
+  "resultClip",
+  "ptc",
   // 凭据与外部接入
   "sshDevices",
   "imAccess",
@@ -174,6 +255,18 @@ export function buildImportWarnings(report: ImportReport): string[] {
   }
   if (report.filesDeduped > 0) {
     warnings.push(`${report.filesDeduped} 个附件与本机已有内容一致，已复用（未重复占用空间）`);
+  }
+  if ((report.filesMissing ?? 0) > 0) {
+    warnings.push(`${report.filesMissing} 个附件在备份包里缺失（消息里保留原引用，不会静默删除）`);
+  }
+  // S5:体积体检——只提示,不改数据。超窗会话接着聊会一次注入全部历史。
+  const over = (report.contextAudit ?? []).filter((entry) => entry.overWindow);
+  if (over.length > 0) {
+    const largest = over[0]!;
+    warnings.push(
+      `${over.length} 个会话的完整历史超过模型上下文窗口（最大「${largest.title || largest.conversationId}」约 ${Math.round(largest.estTokens / 1000)}K tokens）:` +
+      `继续聊天前建议开启「上下文预算」或先手动压缩`,
+    );
   }
   return warnings;
 }
@@ -1081,6 +1174,7 @@ function importAndroidConversations(extractDir: string, dbPath: string, androidF
     const nodeStmt = db.query("SELECT * FROM message_node WHERE conversation_id = ? ORDER BY node_index ASC");
 
     let imported = 0;
+    const audited: Conversation[] = [];
     // DB-first + B1:合并基底二选一——PC zip 恢复路径已把备份会话放进 state.conversations
     // 暂存(替换语义,基底=备份内容);无暂存(Android zip 合并路径)则「逐会话流式合并」:
     // 只读现有会话的元数据(轻量)定序,会话节点按需逐会话从活库瞬时读、用完即放,绝不把
@@ -1161,6 +1255,16 @@ function importAndroidConversations(extractDir: string, dbPath: string, androidF
         modeInjectionIds: parseIdArray(row.mode_injection_ids),
         lorebookIds: parseIdArray(row.lorebook_ids),
       };
+      // S7:取最后一个选中消息上带 isContextCheckpoint 的节点作为会话窗口边界
+      // (对齐安卓 ChatRequestFactory「indexOfLast { isContextCheckpoint }」)。
+      for (let i = messageNodes.length - 1; i >= 0; i -= 1) {
+        const node = messageNodes[i]!;
+        const selected = node.messages[node.selectIndex] ?? node.messages[0];
+        if (selected?.isContextCheckpoint === true) {
+          conv.contextBoundaryMessageId = selected.id;
+          break;
+        }
+      }
 
       const existingIdx = stagingIndexById.get(conv.id) ?? liveIndexById.get(conv.id);
       if (existingIdx !== undefined) {
@@ -1170,6 +1274,7 @@ function importAndroidConversations(extractDir: string, dbPath: string, androidF
         merged.push(conv); // 备份独有条目追加,末尾统一按 updateAt 倒序归位
       }
       imported += 1;
+      audited.push(conv);
     }
 
     // 合并路径:把按需补读节点的现有会话(元数据槽位,内容被覆盖的跳过)回填进结果,
@@ -1185,25 +1290,48 @@ function importAndroidConversations(extractDir: string, dbPath: string, androidF
     // recent first" order alongside any PC-side conversations the user already had.
     state.conversations = merged;
 
-    // 助手记忆:Android 存在同库的 MemoryEntity 表(字段 id / assistant_id / content,无时间戳)。
-    // 按 (assistantId, content) 去重 merge 进 memoryStore——PC 已有的相同内容不重复导入;
-    // Android 的 Int 自增 id 和 PC 的 id 空间不一致,memoryStore 统一重新分配。global 记忆的
-    // assistant_id 两端都是 "__global__"。MemoryEntity 不存在(老版本 APP / 空库)时查询抛错,
-    // 静默跳过。语义为"合并"(迁移场景,不覆盖 PC 已有记忆),区别于备份恢复的"替换"。
+    // 助手记忆:上游 Room 28 起把逐条 MemoryEntity 改成 Markdown 文件表 memory_file
+    // (assistant_id / path / content / updated_at,按助手一份 /profile.md)。按「表在场」
+    // 探测、新表优先——否则 3.x 备份会静默丢全部记忆(上游桌面同源缺陷;
+    // 本文件头「契约冻结」以 MemoryEntity 为前提写于 Room 27 时代,此处是显式申辩的偏离)。
+    // 语义为"合并"(迁移场景,不覆盖 PC 已有记忆),按 (assistantId, content) 去重。
     try {
-      const memoryRows = db.query("SELECT assistant_id, content FROM MemoryEntity").all() as Record<string, unknown>[];
-      const flat: AssistantMemory[] = memoryRows.map((row) => ({
-        id: 0,
-        assistantId: String(row.assistant_id ?? GLOBAL_MEMORY_ID) || GLOBAL_MEMORY_ID,
-        content: String(row.content ?? ""),
-        createdAt: 0,
-        updatedAt: 0,
-      }));
-      memoryStore.importFlatMemories(flat, "merge");
-      invalidateContextSnapshots();
+      const tableNames = new Set(
+        (db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name?: unknown }>)
+          .map((row) => String(row.name ?? "")),
+      );
+      const flat: AssistantMemory[] = [];
+      if (tableNames.has("memory_file")) {
+        const rows = db.query("SELECT assistant_id, content FROM memory_file").all() as Record<string, unknown>[];
+        for (const row of rows) {
+          const assistantId = String(row.assistant_id ?? GLOBAL_MEMORY_ID) || GLOBAL_MEMORY_ID;
+          for (const content of parseMemoryProfileMarkdown(String(row.content ?? ""))) {
+            flat.push({ id: 0, assistantId, content, createdAt: 0, updatedAt: 0 });
+          }
+        }
+      } else if (tableNames.has("MemoryEntity")) {
+        const memoryRows = db.query("SELECT assistant_id, content FROM MemoryEntity").all() as Record<string, unknown>[];
+        for (const row of memoryRows) {
+          flat.push({
+            id: 0,
+            assistantId: String(row.assistant_id ?? GLOBAL_MEMORY_ID) || GLOBAL_MEMORY_ID,
+            content: String(row.content ?? ""),
+            createdAt: 0,
+            updatedAt: 0,
+          });
+        }
+      } else {
+        console.warn("[import] 备份库缺少 memory_file / MemoryEntity 两张记忆表,跳过记忆导入");
+      }
+      if (flat.length > 0) {
+        memoryStore.importFlatMemories(flat, "merge");
+        invalidateContextSnapshots();
+      }
     } catch (err) {
-      console.warn("[import] failed to read MemoryEntity table:", err);
+      console.warn("[import] failed to read memory tables:", err);
     }
+    // S5:体检只统计本次真正写进来的会话;不改任何字段。
+    report.contextAudit = auditConversationContext(audited);
     return imported;
   } finally {
     db.close();
@@ -1236,6 +1364,7 @@ interface KelivoImportResult {
   quickMessagesImported: number;
   searchServicesImported: number;
   skippedSearchTypes: string[];
+  contextAudit: ContextAuditEntry[];
   settingsChanged: boolean;
 }
 
@@ -1255,6 +1384,84 @@ interface KelivoImportResult {
  * 对话按 id 合并：同 id 覆盖（二次导入幂等），PC 独有会话保留；写入走 state.conversations
  * 暂存 + finalizeConversationImport() 统一重灌活库并重建 FTS。
  */
+/** Kelivo 附件落地(S9):upload/ 目录 → PC 文件库,按 sha256 去重。
+ *  返回映射的键同时包含 URI 里的编码段(asset_rows.path 的 /upload/<段>)与解码后的文件名,
+ *  这样消息里 `kelivo-file:///upload/%E5%A6%84…` 与裸文件名两种写法都能命中。
+ *  asset_rows 登记了但包里不存在的文件计入 filesMissing(引用保留,不静默删除)。 */
+function importKelivoAssets(
+  extractDir: string,
+  db: Database,
+  report: ImportReport,
+  onImported: () => void,
+): Map<string, number> {
+  const nameToId = new Map<string, number>();
+  const uploadDir = join(extractDir, "upload");
+  if (!existsSync(uploadDir)) return nameToId;
+  const existingByHash = new Map<string, number>();
+  for (const file of state.files) {
+    const path = file.path && existsSync(file.path) ? file.path : "";
+    if (!path) continue;
+    const hash = hashFileSha256(path);
+    if (hash) existingByHash.set(hash, file.id);
+  }
+  // 声明集合:asset_rows 的 path/thumbnail(解码后的磁盘文件名)+ 指向它的原始编码段别名。
+  const diskEntries = new Set(readdirSync(uploadDir));
+  const declared = new Set<string>();
+  const aliases = new Map<string, Set<string>>();
+  try {
+    const rows = db.query("SELECT path, thumbnail_path FROM asset_rows").all() as Array<{ path?: string; thumbnail_path?: string | null }>;
+    for (const row of rows) {
+      for (const uri of [row.path, row.thumbnail_path]) {
+        const match = String(uri ?? "").match(/\/upload\/([^/?#]+)/);
+        if (!match?.[1]) continue;
+        const encoded = match[1];
+        let decoded = encoded;
+        try { decoded = decodeURIComponent(encoded); } catch { /* 保留原段 */ }
+        declared.add(decoded);
+        const set = aliases.get(decoded) ?? new Set<string>();
+        set.add(encoded);
+        aliases.set(decoded, set);
+      }
+    }
+  } catch {
+    // 老版本没有 asset_rows:退化为扫目录(readdir 已取到)。
+  }
+  // 缺失只按解码后的声明名统计一次(编码段与解码名是同一文件,不能重复计数)。
+  for (const name of declared) {
+    if (!diskEntries.has(name)) report.filesMissing = (report.filesMissing ?? 0) + 1;
+  }
+  mkdirSync(filesDir, { recursive: true });
+  for (const entry of diskEntries) {
+    const srcPath = join(uploadDir, entry);
+    if (!existsSync(srcPath) || !statSync(srcPath).isFile()) continue;
+    const stats = statSync(srcPath);
+    const hash = hashFileSha256(srcPath);
+    const existingId = hash ? existingByHash.get(hash) : undefined;
+    let fileId: number;
+    if (existingId !== undefined) {
+      fileId = existingId;
+      report.filesDeduped += 1;
+    } else {
+      fileId = state.nextFileId++;
+      const ext = extname(entry) || "";
+      const targetPath = join(filesDir, `${fileId}${ext}`);
+      copyFileSync(srcPath, targetPath);
+      state.files.push({
+        id: fileId,
+        path: targetPath,
+        fileName: entry,
+        mime: guessMimeFromExt(ext),
+        size: stats.size,
+      });
+      if (hash) existingByHash.set(hash, fileId);
+      onImported();
+    }
+    nameToId.set(entry, fileId);
+    for (const alias of aliases.get(entry) ?? []) nameToId.set(alias, fileId);
+  }
+  return nameToId;
+}
+
 function applyKelivoZipFromExtractDir(extractDir: string, options: KelivoSyncOptions): {
   settingsImported: boolean; filesImported: number; skillsImported: number; conversationsImported: number;
   dbReadError: string | null; report: ImportReport; origin?: "kelivo";
@@ -1264,7 +1471,21 @@ function applyKelivoZipFromExtractDir(extractDir: string, options: KelivoSyncOpt
   snapshotStateJsonBeforeImport();
   const report = newImportReport();
   const dbPath = join(extractDir, "database", "kelivo.db");
-  const result = importKelivoData(dbPath, options);
+  // S9:附件落地先于会话导入(消息 parts 的 kelivo-file:///upload/… 需要映射才能改写)。
+  let filesImported = 0;
+  let kelivoFileMap = new Map<string, number>();
+  try {
+    const assetDb = new Database(dbPath, { readonly: true });
+    try {
+      kelivoFileMap = importKelivoAssets(extractDir, assetDb, report, () => { filesImported += 1; });
+    } finally {
+      assetDb.close();
+    }
+  } catch (err) {
+    console.warn("[import] Kelivo 附件导入失败(消息引用原样保留):", err);
+  }
+  const result = importKelivoData(dbPath, options, kelivoFileMap);
+  report.contextAudit = result.contextAudit;
 
   finalizeConversationImport();
   saveState();
@@ -1280,7 +1501,7 @@ function applyKelivoZipFromExtractDir(extractDir: string, options: KelivoSyncOpt
   );
   return {
     settingsImported: result.settingsChanged,
-    filesImported: 0,
+    filesImported,
     skillsImported: 0,
     conversationsImported: result.conversationsImported,
     dbReadError: null,
@@ -1305,8 +1526,9 @@ function applyKelivoZipFromExtractDir(extractDir: string, options: KelivoSyncOpt
 }
 
 /** 从 Kelivo schema v3 的库中按选项读取并合并进 PC 状态。 */
-function importKelivoData(dbPath: string, options: KelivoSyncOptions): KelivoImportResult {
+function importKelivoData(dbPath: string, options: KelivoSyncOptions, fileMap: Map<string, number> = new Map()): KelivoImportResult {
   const db = new Database(dbPath, { readonly: true });
+  let importedConversations: Conversation[] = [];
   try {
     if (!Array.isArray(state.settings.assistants)) state.settings.assistants = [];
     if (!Array.isArray(state.settings.providers)) state.settings.providers = [];
@@ -1394,7 +1616,16 @@ function importKelivoData(dbPath: string, options: KelivoSyncOptions): KelivoImp
       const name = kelivoText(payload.name).trim() || fallbackName;
       let target = findBlankAssistant(name);
       if (!target) {
-        target = { ...defaultAssistant(), id: id(), name, systemPrompt: "" };
+        // S10:空白助手也要继承源侧上下文窗口(limitContextMessages/contextMessageSize),
+        // 否则映射成默认 0 = 不限,长会话接着聊直接撞窗口。
+        const fields = mapKelivoAssistantFields(payload, resolveAssistantModel);
+        target = {
+          ...defaultAssistant(),
+          id: id(),
+          name,
+          systemPrompt: "",
+          contextMessageLimit: fields.contextMessageLimit ?? 0,
+        };
         state.settings.assistants.push(target);
         assistantsCreated += 1;
       }
@@ -1415,10 +1646,12 @@ function importKelivoData(dbPath: string, options: KelivoSyncOptions): KelivoImp
         let target = existingByName.get(name);
         if (target) {
           assistantsMatched += 1;
-          // 记忆开关不随 Kelivo 走：用户的本地决定优先。
+          // 记忆开关不随 Kelivo 走：用户的本地决定优先。上下文窗口同理——本地已设的
+          // 条数限制是用户对这台机器的显式配置,Kelivo 的「不限」不该把它冲成 0。
           Object.assign(target, fields, {
             enableMemory: target.enableMemory,
             useGlobalMemory: target.useGlobalMemory,
+            contextMessageLimit: target.contextMessageLimit,
           });
         } else {
           target = { ...defaultAssistant(), ...fields, id: id(), name };
@@ -1593,7 +1826,7 @@ function importKelivoData(dbPath: string, options: KelivoSyncOptions): KelivoImp
     let conversationsImported = 0;
     if (options.conversations) {
       const convRows = db.query(
-        "SELECT id, title, assistant_id, created_at, updated_at, is_pinned, version_selections_json, chat_suggestions_json FROM conversation_rows ORDER BY created_at",
+        "SELECT id, title, assistant_id, created_at, updated_at, is_pinned, version_selections_json, chat_suggestions_json, truncate_index FROM conversation_rows ORDER BY created_at",
       ).all() as Record<string, unknown>[];
       const msgStmt = db.query("SELECT * FROM message_rows WHERE conversation_id = ? ORDER BY message_order");
       const partStmt = db.query(
@@ -1626,18 +1859,60 @@ function importKelivoData(dbPath: string, options: KelivoSyncOptions): KelivoImp
           const parsed = JSON.parse(String(row.chat_suggestions_json ?? "[]"));
           if (Array.isArray(parsed)) chatSuggestions = parsed.map(String).filter(Boolean);
         } catch { /* ignore */ }
+        const nodes = buildKelivoNodes(messageRows, partsByRevision, selections).map((node) => ({
+          ...node,
+          // S9:把 kelivo-file:///upload/… 改写成 PC 的 /api/files/<id>/content;
+          // 未命中的引用原样保留(缺附件由 filesMissing 显式报告,不静默删除)。
+          messages: node.messages.map((msg) => ({
+            ...msg,
+            parts: rewriteAndroidFileUrlsDeep(msg.parts as unknown as JsonValue, fileMap) as unknown as MessagePart[],
+          })),
+        }));
+        // Kelivo 的 truncate_index 是"扁平消息下标"(message_order 排序);换算成所在
+        // 修订组后,以该组选中消息作为 PC 的会话边界。语义对齐 rikkelivo 的
+        // _legacy_truncate_slot(message index → distinct-group count)。-1 = 未设置。
+        let boundaryMessageId: string | null = null;
+        const truncateIndex = Number(row.truncate_index ?? -1);
+        if (Number.isFinite(truncateIndex) && truncateIndex >= 0) {
+          const flat = [...messageRows].sort(
+            (left, right) =>
+              Number(left.message_order ?? 0) - Number(right.message_order ?? 0)
+              || String(left.id ?? "").localeCompare(String(right.id ?? "")),
+          );
+          const target = flat[truncateIndex];
+          if (target) {
+            const groupKey = String(target.group_id || target.id || "");
+            const orderedGroups = new Map<string, Record<string, unknown>[]>();
+            for (const msg of messageRows) {
+              const key = String(msg.group_id || msg.id || "");
+              if (!key) continue;
+              const list = orderedGroups.get(key) ?? [];
+              list.push(msg);
+              orderedGroups.set(key, list);
+            }
+            const groupOrder = Array.from(orderedGroups.entries()).sort((left, right) => {
+              const orderOf = (rows: Record<string, unknown>[]) => Math.min(...rows.map((r) => Number(r.message_order ?? 0)));
+              return orderOf(left[1]) - orderOf(right[1]);
+            });
+            const groupIndex = groupOrder.findIndex(([key]) => key === groupKey);
+            const node = groupIndex >= 0 ? nodes[groupIndex] : undefined;
+            const selected = node ? (node.messages[node.selectIndex] ?? node.messages[0]) : null;
+            if (selected) boundaryMessageId = selected.id;
+          }
+        }
         imported.push({
           id: convId,
           assistantId,
           systemPrompt: null,
           title: String(row.title ?? ""),
-          messages: buildKelivoNodes(messageRows, partsByRevision, selections),
+          messages: nodes,
           chatSuggestions,
           isPinned: Number(row.is_pinned ?? 0) === 1,
           createAt: kelivoUsToMs(row.created_at),
           updateAt: kelivoUsToMs(row.updated_at),
           modeInjectionIds: [],
           lorebookIds: [],
+          contextBoundaryMessageId: boundaryMessageId,
         });
       }
 
@@ -1661,6 +1936,7 @@ function importKelivoData(dbPath: string, options: KelivoSyncOptions): KelivoImp
       }
       state.conversations = Array.from(merged.values()).sort((a, b) => b.updateAt - a.updateAt);
       conversationsImported = imported.length;
+      importedConversations = imported;
     }
 
     // ── 记忆 ───────────────────────────────────────────────────────────
@@ -1738,6 +2014,7 @@ function importKelivoData(dbPath: string, options: KelivoSyncOptions): KelivoImp
       quickMessagesImported,
       searchServicesImported,
       skippedSearchTypes,
+      contextAudit: auditConversationContext(importedConversations),
       settingsChanged: providersImported + assistantsCreated + worldBooksImported + promptInjectionsImported + quickMessagesImported + searchServicesImported + assistantsMatched > 0,
     };
   } finally {
@@ -1903,6 +2180,8 @@ function normalizeAndroidMessage(raw: unknown): Message | null {
     modelId: typeof r.modelId === "string" ? r.modelId : null,
     usage: (r.usage ?? null) as JsonValue | null,
     translation: typeof r.translation === "string" ? r.translation : null,
+    // S7:安卓上下文检查点随消息透传(缺省字段在安卓是 false;只有 true 才写)。
+    ...(r.isContextCheckpoint === true ? { isContextCheckpoint: true } : {}),
   };
 }
 

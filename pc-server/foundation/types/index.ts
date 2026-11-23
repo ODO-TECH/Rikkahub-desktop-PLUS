@@ -215,12 +215,19 @@ export interface Assistant {
 }
 
 /** 桌面端原生支持的 ASR 判别符。ASR 无注册表,这是「本端认识且能跑」的单源;
- *  android-contract-sync.test.ts 会核它与安卓 ASRProviderSetting 的交集不放肆扩张。 */
-export const PC_KNOWN_ASR_TYPES = ["openai_realtime", "dashscope", "volcengine", "mimo"] as const;
+ *  android-contract-sync.test.ts 会核它与安卓 ASRProviderSetting 的交集不放肆扩张。
+ *  2026-11-18 对齐安卓 f361bbc1:deepseek(官方 /v1/tools/asr,HTTP 分段家族)。 */
+export const PC_KNOWN_ASR_TYPES = ["openai_realtime", "dashscope", "volcengine", "mimo", "deepseek"] as const;
 export type PcNativeAsrType = (typeof PC_KNOWN_ASR_TYPES)[number];
 
+/** 「HTTP 分段家族」ASR 判别符:没有 WebSocket 也没有服务端 VAD,PCM 攒够一段上传一次。
+ *  单源放这里(与 PC_KNOWN_ASR_TYPES 同居,本文件零运行时依赖,前端可直接引)是因为两层都要
+ *  判定同一件事:后端 media/asr.ts 的会话分支,与前端 chat-input 的「等 idle 收尾再关 socket」
+ *  ——漏一家就是最后一段音频丢失。新增分段型供应商只改这一行。 */
+export const PC_SEGMENTED_HTTP_ASR_TYPES = ["mimo", "deepseek"] as const;
+
 /** ASR type 是跨端共享枚举(APP ASRProviderSetting 现有 openai_realtime/dashscope/volcengine
- *  /mimo/step 5 家)。mimo 是 HTTP 分段识别(chat/completions + input_audio),桌面端已实现;
+ *  /mimo/step/deepseek 6 家)。mimo/deepseek 是 HTTP 分段识别(无 WebSocket),桌面端已实现;
  *  step 仍未实现,但导入/导出往返必须在存储层原样保留它们的判别符(否则 PC 会把配置无声
  *  重置成 openai_realtime,见 media/asr.ts normalizeAsrProviders 头注)。故 type 放开为
  *  string,识别与降级由运行时守卫(PC_KNOWN_ASR_TYPES / transcribeAudioWithAsrProvider /
@@ -254,7 +261,11 @@ export interface TtsProvider {
   // (tts-providers/registry 的 TTS_PROVIDER_TYPES / generateSpeechWithTtsProvider 的查表未命中)。
   type:
     | "system" | "openai" | "gemini" | "minimax" | "qwen" | "groq" | "xai" | "mimo"
-    | "elevenlabs" | "step" | "fish-audio" | "volcengine"
+    | "elevenlabs" | "step" | "fish-audio" | "volcengine" | "deepseek"
+    // yukkuri = 桌面端本地的油库里(AquesTalk)合成,跑在 pc-server 进程里,安卓既没有
+    // x64 DLL 也没有这个 @SerialName → 导出给 APP 时整条滤掉(见 backup/export.ts 的
+    // PC_ONLY_TTS_PROVIDER_TYPES)。
+    | "yukkuri"
     | (string & {});
   id: string;
   name: string;
@@ -291,6 +302,9 @@ export interface TtsProvider {
   // volcengine(豆包语音;speaker=音色 ID,resourceId 与开通服务绑定)
   speaker?: string;
   resourceId?: string;
+  // yukkuri(桌面端本地 AquesTalk):SDK 目录,留空则按 RIKKAHUB_YUKKURI_SDK_ROOT / ~/yukkuri-sdk。
+  // PC-only 字段,安卓无此概念;voice/emotion/speed/pitch 复用上面已有的字段。
+  sdkPath?: string;
 }
 
 export interface Message {
@@ -303,6 +317,10 @@ export interface Message {
   modelId: string | null;
   usage: JsonValue | null;
   translation: string | null;
+  /** 安卓上下文检查点(对齐 UIMessage.isContextCheckpoint,缺省 false):此消息是之前全部
+   *  历史的摘要/边界,组装请求时从最后一条检查点开始取。随安卓备份双向透传;聊天引擎另用
+   *  会话级 contextBoundaryMessageId 表达窗口起点(见 Conversation)。 */
+  isContextCheckpoint?: boolean;
 }
 
 export interface MessageNode {
@@ -358,6 +376,8 @@ export interface MemorySettings {
 }
 
 export interface Conversation {
+  conversationKind?: "agent" | "chat";
+  executionMode?: "agent" | "chat";
   id: string;
   assistantId: string;
   systemPrompt: string | null;
@@ -383,6 +403,12 @@ export interface Conversation {
    *  (编码器自校验,编辑/fork 后失效记录自动跳过)。仅存 PC 自有库;跨端导出
    *  白名单不含此列。 */
   engineCompactions?: JsonValue[] | null;
+  /** 上下文边界(PC 专属,可空):窗口起点 = 这条消息(含)。双向来源:
+   *  - 安卓备份:最后一个 isContextCheckpoint 消息的 id;
+   *  - Kelivo 备份:truncate_index 指向的首个保留消息所在修订组的选中消息 id。
+   *  只影响编码窗口,不删任何历史;跨端导出不写该列(安卓靠消息级 isContextCheckpoint,
+   *  Kelivo 导出维持既有 truncate_index=-1 口径)。 */
+  contextBoundaryMessageId?: string | null;
 }
 
 // ----- 工作区(agent 模式)领域模型 -----
@@ -713,6 +739,8 @@ export interface MemorySnapshot {
 
 // 活库行类型(SELECT 结果)。is_pinned 存 0/1;system_prompt 空 string 对应 null。
 export interface PcConversationRow {
+  conversation_kind?: "agent" | "chat";
+  execution_mode?: "agent" | "chat";
   id: string;
   assistant_id: string;
   title: string;
@@ -726,6 +754,7 @@ export interface PcConversationRow {
   workspace_id?: string | null;
   workspace_cwd?: string | null;
   engine_compactions?: string | null;
+  context_boundary_message_id?: string | null;
 }
 export interface PcMessageNodeRow {
   id: string;
@@ -856,10 +885,11 @@ export interface AsrRealtimeSession {
   /** 语音模式去抖:上一个已发 turn_end 的 utterance 文本。Volcengine 的 definite=true 会随
    *  累积 full-text 重复到达,凭此只在文本真正前进时才推一次「这句说完了」,防重复入队。 */
   lastTurnEndText: string;
-  /** MiMo:累积的 PCM16LE 单声道字节,达到分段阈值后异步上传。 */
+  /** HTTP 分段家族(MiMo / DeepSeek)共用:累积的 PCM16LE 单声道字节,达到分段阈值后异步上传。
+   *  字段名沿用 mimo*——它们只是这套机器的工作缓冲,不属于某一家(改名无收益,勿再当 MiMo 专属读)。 */
   mimoPcm: Buffer;
-  /** MiMo:同一时刻只允许一个分段上传,保证转写结果顺序。 */
+  /** HTTP 分段家族共用:同一时刻只允许一个分段上传,保证转写结果顺序。 */
   mimoFlushing: boolean;
-  /** MiMo:stop 已触发,不再接收新音频。 */
+  /** HTTP 分段家族共用:stop 已触发,不再接收新音频。 */
   mimoStopped: boolean;
 }

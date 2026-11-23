@@ -10,6 +10,8 @@
 //   pre-sqlite.bak 原样保留——它仍是活库损坏恢复链的最后兜底,退役需先补替代兜底(未做);
 // - tmp/(导出/导入/Kelivo/云同步暂存):超龄 24h 即整条回收——中断的任务不会自己收尾;
 // - files/ 孤儿附件:只统计提示、不删(GC 需与安卓删除语义对齐,留后续专项);
+// - wiki-cache/ 百科检索缓存:纯可再生(重问一次上游就有),超龄即回收——读取侧本就按 TTL
+//   判过期,这里补的是「再也没被问过的那批文件永远躺在盘上」这一段;
 // - 备份类收敛 backups/ 子目录:缓做(要改恢复链全部路径,收益只有目录可读性)。
 
 import { existsSync, readdirSync, rmSync, statSync, unlinkSync, type Dirent } from "node:fs";
@@ -21,6 +23,7 @@ import { APP_VERSION } from "../updates/index";
 import { reportError } from "../observability/app-errors";
 import { MEMORY_FILE_SPLIT_MIGRATION, state } from "./json-store";
 import { collectReferencedFileIds } from "../backup/export";
+import { sweepWikiCache } from "../tools/mcp-builtin-moegirl";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CORRUPT_MAX_AGE_MS = 30 * DAY_MS;
@@ -188,6 +191,10 @@ export async function runDataDirHygiene(): Promise<void> {
     const removedInstallers = sweepStaleInstallersIn(updatesCacheDir, APP_VERSION);
     if (removedInstallers.length > 0) {
       reportError("persistence", "info", `数据目录清理：移除 ${removedInstallers.length} 个过时的更新安装包残留`, removedInstallers.join("、"), "hygiene_installers_cleaned", { count: removedInstallers.length });
+    }
+    const removedWikiCache = sweepWikiCache();
+    if (removedWikiCache > 0) {
+      reportError("persistence", "info", `数据目录清理：回收 ${removedWikiCache} 份过期的百科检索缓存（纯可再生，重问一次上游即可恢复）`, undefined, "hygiene_wiki_cache_cleaned", { count: removedWikiCache });
     }
     const memorySplitDone = Array.isArray(state.appliedMigrations) && state.appliedMigrations.includes(MEMORY_FILE_SPLIT_MIGRATION);
     if (sweepMemorySplitFossilIn(dataDir, memorySplitDone)) {

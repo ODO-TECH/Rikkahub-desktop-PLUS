@@ -22,6 +22,7 @@
 // 未知事件/未知 delta 官方要求"log and skip"——容错跳过,不抛错。
 
 import type { Assistant, JsonValue, Message, Model, Provider, ApiMessage } from "../foundation/types";
+import { effectiveMaxTokens, effectiveTopP } from "./sampling";
 import { id, isRecord } from "../foundation/utils";
 import { initialApprovalState } from "../tools/approval";
 import { toolResultTextForApi } from "../tools/format";
@@ -250,8 +251,11 @@ export function buildInteractionsRequestBody(
 
   const config: Record<string, JsonValue> = {};
   if (assistant.temperature != null) config.temperature = assistant.temperature;
-  if (assistant.topP != null) config.top_p = assistant.topP;
-  if (assistant.maxTokens != null) config.max_output_tokens = assistant.maxTokens;
+  // 0 = 未设置哨兵(见 sampling.ts):原样出线会被上游当字面值执行并得到空回复。
+  const topP = effectiveTopP(assistant.topP);
+  const outputCap = effectiveMaxTokens(assistant.maxTokens);
+  if (topP != null) config.top_p = topP;
+  if (outputCap != null) config.max_output_tokens = outputCap;
   if (supportsAbility(modelItem, "REASONING")) {
     config.thinking_summaries = "auto";
     const normalized = reasoningLevelNormalized(assistant.reasoningLevel);

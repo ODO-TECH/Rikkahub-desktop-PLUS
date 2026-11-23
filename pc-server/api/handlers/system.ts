@@ -8,7 +8,8 @@ import { saveState, state } from "../../persistence/json-store";
 import { loadModelsDev, modelsDevCache } from "../../inference-engine/providers";
 import { findModel } from "../../model-providers";
 import { activeLoginEvents } from "../../model-providers/auth";
-import { contextWindowFor } from "../../model-providers/model-limits";
+import { contextWindowFor, outputLimitFor } from "../../model-providers/model-limits";
+import { reserveTokensFor } from "../../inference-engine/engine-compaction";
 import { error, json, readJson } from "../request";
 import { healthResponse } from "../health";
 import { isLoopbackRequest } from "../net-context";
@@ -224,15 +225,21 @@ export async function handleSystemRoutes(request: Request, url: URL, path: strin
     // **端点身份**(baseUrl 主机)取值,provider 必须由 findModel 解析——它会展开
     // providerOverwrite,故按模型覆写走别家网关的模型也能查对。
     const mid = url.searchParams.get("modelId");
-    if (!mid) return json({ contextLimit: null });
+    if (!mid) return json({ contextLimit: null, contextReserve: null });
     // 首次启动时前端可能赶在 models.dev 加载完之前发请求。await 一下:已加载则立即返回
     // (常态),还在加载则等它完(loadModelsDev 内部有 10s fetch timeout 兜底)。这样 null 的
     // 语义是确定的"models.dev 里查不到此模型",前端可以安全缓存,不会把启动期的临时空
     // 缓存永久当真。loadModelsDev 对并发调用做了去重,多个请求共用同一个 in-flight promise。
     await loadModelsDev();
-    if (!modelsDevCache) return json({ contextLimit: null });
+    if (!modelsDevCache) return json({ contextLimit: null, contextReserve: null });
     const found = findModel(mid);
-    return json({ contextLimit: contextWindowFor(modelsDevCache, found.provider, found.model.modelId) });
+    const contextLimit = contextWindowFor(modelsDevCache, found.provider, found.model.modelId);
+    // S3:预留量随窗口一起下发,前端提示条不再自己写死 16384——否则小窗口模型上
+    // 后端已开始自动压缩、前端却还说"空间充足"(或反之),两条线各说各话。
+    const contextReserve = contextLimit != null
+      ? reserveTokensFor(contextLimit, outputLimitFor(modelsDevCache, found.provider, found.model.modelId))
+      : null;
+    return json({ contextLimit, contextReserve });
   }
   if (path === "prompt/optimize" && request.method === "POST") {
     // 用户在对话输入框点"优化提示词":把原文(+可选的最近几轮对话上下文)+ meta-prompt

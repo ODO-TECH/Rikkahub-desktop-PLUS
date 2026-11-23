@@ -61,23 +61,39 @@ For each element, specify:
 Keep the original reading order and layout structure as much as possible.
 Do not interpret or translate—only transcribe and describe what is visually present.`;
 
-/** 链式摘要超预算后的二次浓缩提示词。与 DEFAULT_COMPRESS_PROMPT 分开:输入已经是
- *  摘要而非对话,要求"合并重复、保住事实",避免模型把它当新对话再归纳一遍。 */
-export const DEFAULT_CONDENSE_SUMMARY_PROMPT = `You are a context compaction assistant. The text below is an existing summary of an earlier conversation that has grown beyond its budget. Condense it further.
+/** 分层再蒸馏提示词(压缩 v2 · S6)。输入是**若干相邻块的摘要**(不是原文,也不是
+ *  本层上一代的输出),要求合并成一份更紧的上层摘要。与 DEFAULT_COMPRESS_PROMPT 分开:
+ *  那边折对话,这边折摘要,KEEP/DROP 清单显式给出——不写清楚时模型倾向于"再归纳一遍",
+ *  把事实磨成泛泛而谈,这正是 v1 链式浓缩 ρ^k 衰减的根因。
+ *  逐字引用必须原样保留:它是 S7 无损召回(search_context → read_original)的检索键,
+ *  改写一个字符就再也搜不回原文。 */
+export const DEFAULT_CONDENSE_SUMMARY_PROMPT = `You are a context compaction assistant. The text below contains several summaries covering consecutive segments of an earlier conversation. Together they exceed their budget. Merge them into ONE tighter summary covering the whole span.
 
-Requirements:
-1. Preserve every fact, decision, name, number, preference, and open task that may matter later
-2. Remove repetition and low-value phrasing; merge overlapping points
-3. Keep the summary in the same language as the input
-4. Target approximately {target_tokens} tokens
-5. Output the summary directly without explanations or meta-commentary
-6. Keep the opening indicator that marks this as a summary of the earlier conversation
+KEEP (never drop):
+- Facts, decisions, names, numbers, dates, file paths, identifiers and URLs
+- User preferences, constraints and standing instructions
+- Open tasks, unresolved questions, and the current state of any work in progress
+- The chronological order of events
+
+DROP:
+- Repetition across segments: state a repeated fact once, at its earliest position
+- Pleasantries, meta-commentary, and restatements of these instructions
+- Intermediate reasoning behind a decision that is already recorded
+- Verbose phrasing: prefer compact factual sentences
+
+Rules:
+1. Keep the same language as the input
+2. Target approximately {target_tokens} tokens
+3. Output the merged summary directly, without explanations or meta-commentary
+4. Start with a clear indicator that this is a summary of the earlier conversation
+5. Preserve any verbatim quotation character-for-character. Quotations are the search keys used to recover the original messages later; rewriting one makes the original unrecoverable
+6. Add nothing that is not present in the input
 
 {additional_context}
 
-<summary>
+<summaries>
 {content}
-</summary>`;
+</summaries>`;
 
 export const DEFAULT_COMPRESS_PROMPT = `You are a conversation compression assistant. Compress the following conversation into a concise summary.
 

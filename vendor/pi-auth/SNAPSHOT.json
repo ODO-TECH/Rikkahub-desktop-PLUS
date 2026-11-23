@@ -1,0 +1,10 @@
+{
+  "source": "pi/packages/ai/src, pinned existing desktop snapshot",
+  "purpose": "OAuth protocol only; no coding-agent or provider SDKs",
+  "modifications": [
+    "types.ts reduced to the protocol types used by desktop OAuth; provider SDK graph removed",
+    "Selected OAuth sources and GitHub Copilot header helper retained; no agent loop or coding-agent"
+  ],
+  "files": 27,
+  "bytes": 147247
+}

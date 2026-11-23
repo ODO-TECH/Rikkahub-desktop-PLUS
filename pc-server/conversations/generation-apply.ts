@@ -14,6 +14,7 @@ import { isRecord } from "../foundation/utils";
 import { touchStream } from "../api/sse";
 import { fillContextLimit } from "../inference-engine/providers";
 import { mergeTokenUsage } from "../inference-engine/tool-loop";
+import { learnFromUsage } from "../inference-engine/token-calibration";
 import {
   addStreamImage,
   addStreamText,
@@ -141,6 +142,10 @@ export function createGenerationEventApplier(target: GenerationApplyTarget): Gen
         // P5 统计对齐:pi 路径的 usage 不经 providers 的填充点,在应用器统一补
         // contextLimit(分母);已填则内部跳过,chat 路径幂等。
         fillContextLimit(currentMessage);
+        // S2 用量自校准:拿本轮真实 promptTokens 与出站时的本地估算配一个样本。
+        // 内部只认第一次(取走即清),工具循环后续轮口径不同源,自然不产样本;
+        // estimated 兜底载荷一律拒收。best-effort,不影响写入语义。
+        learnFromUsage(conversation.id, event.usage);
         break;
       case "engine_fidelity": {
         // P7 保真注解:引擎消息块结构落 assistant 消息 annotations(type:"pi-fidelity",

@@ -68,6 +68,8 @@ export function ChatMessageAvatarRow({
     return null;
   }
 
+  // 运行模式只落在左侧会话列表的图标上;消息头不再重复标 Agent/Chatbot,
+  // 把名字/时间/头像留给模型信息本身(2026-11-23 用户反馈)。
   const showModelIcon = displaySetting?.showModelIcon !== false;
   const showModelName = displaySetting?.showModelName === true;
   if (!showModelIcon && !showModelName) {

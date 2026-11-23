@@ -34,6 +34,11 @@ export function kelivoNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** 0/负数 = 未设置(Kelivo 哨兵),统一成 PC 的 null。 */
+function positiveOrNull(value: number | null): number | null {
+  return value != null && value > 0 ? value : null;
+}
+
 /** Kelivo 助手 payload 中 RikkaHub 能表达的部分。刻意不映射 enableMemory /
  *  useGlobalMemory：匹配到已有助手时，记忆开关是用户的本地决定，导入不得静默改写。 */
 export function mapKelivoAssistantFields(
@@ -43,6 +48,8 @@ export function mapKelivoAssistantFields(
   const modelId = resolveModelId(kelivoText(payload.chatModelProvider), kelivoText(payload.chatModelId));
   const limitContext = payload.limitContextMessages === true;
   const contextSize = kelivoNumber(payload.contextMessageSize);
+  const samplingTopP = positiveOrNull(kelivoNumber(payload.topP));
+  const samplingMaxTokens = positiveOrNull(kelivoNumber(payload.maxTokens));
   const reasoning = isRecord(payload.reasoning) ? payload.reasoning : {};
   const reasoningLevel = kelivoText(reasoning.level).trim();
   const presetMessages = Array.isArray(payload.presetMessages)
@@ -79,8 +86,10 @@ export function mapKelivoAssistantFields(
     systemPrompt: kelivoText(payload.systemPrompt),
     chatModelId: modelId,
     temperature: kelivoNumber(payload.temperature),
-    topP: kelivoNumber(payload.topP),
-    maxTokens: kelivoNumber(payload.maxTokens),
+    // Kelivo 用 0 表示"未设置";落到 PC 的 null 语义,避免 0 字面出线
+    // (top_p=0 / max_tokens=0 会被严格上游执行,表现为空回复)。
+    topP: samplingTopP,
+    maxTokens: samplingMaxTokens == null ? null : Math.floor(samplingMaxTokens),
     contextMessageLimit: limitContext && contextSize != null && contextSize > 0 ? Math.floor(contextSize) : 0,
     streamOutput: payload.streamOutput !== false,
     messageTemplate: kelivoText(payload.messageTemplate) || "{{ message }}",
@@ -236,7 +245,7 @@ export function mapKelivoQuickPhrase(payload: Record<string, unknown>): Record<s
 export const PC_SEARCH_SERVICE_TYPES = new Set([
   "bing_local", "zhipu", "tavily", "exa", "searxng", "linkup", "brave", "metaso", "ollama",
   "perplexity", "firecrawl", "jina", "bocha", "rikkahub", "grok", "tinyfish", "serper", "custom_js",
-  "doubao",
+  "doubao", "deepseek",
 ]);
 
 export function mapKelivoSearchService(payload: Record<string, unknown>): Record<string, JsonValue> | null {

@@ -982,7 +982,7 @@ namespace RikkaHubShell
             string dataDir = ServerLocator.DataDirFor(serverExe, config);
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.FileName = serverExe;
-            startInfo.Arguments = "--no-open --ui-shell";
+            startInfo.Arguments = "--no-open --ui-shell --port " + config.Port;
             startInfo.WorkingDirectory = Path.GetDirectoryName(serverExe);
             startInfo.UseShellExecute = false;
             startInfo.CreateNoWindow = true;

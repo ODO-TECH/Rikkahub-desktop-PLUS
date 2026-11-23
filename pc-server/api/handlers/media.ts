@@ -105,6 +105,12 @@ export async function handleMediaRoutes(request: Request, _url: URL, path: strin
         : [providerItem, ...state.settings.ttsProviders],
       selectedTTSProviderId: state.settings.selectedTTSProviderId ?? providerItem.id,
     });
+    if (type === "yukkuri") {
+      // 保存过的 SDK 路径可能变了:已开的 DLL/词典句柄与按旧路径算出的缓存都要作废,
+      // 下次合成重新 open,用户不必重启后端就能看到新路径的效果。
+      const { resetYukkuri } = await import("../../media/yukkuri");
+      resetYukkuri();
+    }
     return json({ status: "ok", provider: providerItem });
   }
   if (path === "settings/tts-provider/select" && request.method === "POST") {
@@ -144,6 +150,21 @@ export async function handleMediaRoutes(request: Request, _url: URL, path: strin
   if (path === "tts/cancel" && request.method === "POST") {
     cancelAllSystemTts();
     return json({ status: "ok" });
+  }
+  // 油库里(AquesTalk)本地合成的自检:设置页要拿它解释「为什么点了没声音」——
+  // SDK 目录在不在、路径是不是纯 ASCII、DLL 与词典齐不齐。sdkPath 查询参数优先(草稿里
+  // 还没保存的路径也能查),留空则回落到 providerId 那条已存配置。
+  // 动态 import:koffi 加载失败只让这一个路由报错,不拖累整个媒体路由模块。
+  if (path === "tts/yukkuri-status" && request.method === "GET") {
+    const params = new URL(request.url).searchParams;
+    const queryPath = params.get("sdkPath")?.trim() ?? "";
+    const provider = state.settings.ttsProviders.find((item) => item.id === (params.get("providerId") ?? ""));
+    try {
+      const { yukkuriStatus } = await import("../../media/yukkuri");
+      return json(yukkuriStatus(queryPath || provider?.sdkPath || null));
+    } catch (err) {
+      return error(err instanceof Error ? err.message : String(err), 500);
+    }
   }
   if (path === "tts/speech" && request.method === "POST") {
     const body = await readJson<{ text?: string; providerId?: string; speed?: number }>(request);

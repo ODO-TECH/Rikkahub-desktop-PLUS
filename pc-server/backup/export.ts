@@ -288,6 +288,20 @@ export function rewriteAvatarsInSettings(settings: any, mapping: Record<string, 
     // 工作区工具面契约开关是 PC-only(安卓无工作区工具、无行号/revision 契约),
     // 跨端剥离;pc-backup(PC→PC)保留。
     delete copy.workspaceTools;
+    // 上下文预算/工具输出老化是 PC-only(安卓无预算窗口与老化概念,历史按条数窗口),
+    // 跨端剥离;pc-backup(PC→PC)保留。
+    delete copy.contextBudget;
+    // 模型驱动上下文工具面是 PC-only(安卓无工作区引擎、无 compress/read_original 工具),
+    // 跨端剥离;pc-backup(PC→PC)保留。
+    delete copy.contextTools;
+    // 本地调试端口是 PC 专属能力(安卓无调试监听面),跨端剥离;pc-backup(PC→PC)保留。
+    delete copy.debugServer;
+    // 工具结果裁剪是 PC 富化层的发送面能力(安卓走自己的 Transformer 链),
+    // 跨端剥离;pc-backup(PC→PC)保留。
+    delete copy.resultClip;
+    // PTC 程序化工具面是 PC 工作区引擎的沙箱能力(安卓无工作区、无 run_code),
+    // 跨端剥离;pc-backup(PC→PC)保留。
+    delete copy.ptc;
     // 自主循环是 PC 运行底座上的实验(安卓无运行记录表/判定表),跨端剥离;
     // pc-backup(PC→PC)保留。
     delete copy.agentLoop;
@@ -307,6 +321,11 @@ export function rewriteAvatarsInSettings(settings: any, mapping: Record<string, 
     // appSecret 与微信的 botToken——明文进跨端备份等于把机器人凭据送进可能上传
     // WebDAV/S3 的压缩包。pc-backup(PC→PC)不剥,换机必须带走绑定与配对名单。
     delete copy.imAccess;
+    // DeepSeek OCR 的 API Key 与 webPasswordHash/imAccess 同类:凭据不进跨端备份(APP 既没有
+    // OCR 工具 API 的概念,也不需要拿到这把 Key)。pc-backup(PC→PC)不剥,换机带走。
+    // 同组的 deepseekOcrEnabled / deepseekOcrPurpose 不剥——非敏感字符串/布尔,APP 靠
+    // ignoreUnknownKeys 无视,保留往返可让「回到手机再回 PC」不丢开关状态。
+    delete copy.deepseekOcrApiKey;
     // Kelivo 同步是 PC 协调端能力：安卓 settings 没有这两个字段，也不应看到
     // “是否导出 Kelivo 备份”这种桌面设置。
     delete copy.exportKelivoBackup;
@@ -474,7 +493,7 @@ export function filterMessagePartsForAndroid(
  *  pinned 是用户钉住关键消息的标记(压缩时逐字注入),安卓无此能力。
  *  run_resume 是生命周期 L2 恢复消息的标记(指向被恢复的旧 run id),安卓无此语义。
  *  scheduled 是生命周期 L3 调度投递消息的标记(指向调度 id),安卓无调度能力。 */
-export const PC_ONLY_ANNOTATION_TYPES: ReadonlySet<string> = new Set(["model_call_error", "pi-fidelity", "compaction_boundary", "compaction_cut", "steered", "pinned", "agent_loop_halt", "run_resume", "scheduled"]);
+export const PC_ONLY_ANNOTATION_TYPES: ReadonlySet<string> = new Set(["kernel_wire", "execution_mode", "kernel_run", "model_call_error", "pi-fidelity", "compaction_boundary", "compaction_cut", "steered", "pinned", "agent_loop_halt", "run_resume", "scheduled"]);
 
 /** A-2:导出方向的注解清洗。只保留"带字符串判别符且非 PC-only"的注解——缺判别符的
  *  遗留脏对象与 PC-only 类型都会让安卓多态解码即炸;安卓自有/未来新增类型原样透传。 */
@@ -488,9 +507,15 @@ export function filterAnnotationsForAndroid(
   );
 }
 
+/** PC-only TTS 判别符:油库里(AquesTalk)是跑在 pc-server 进程里的本地合成,安卓既没有
+ *  x64 DLL 也没有这个 @SerialName。导出方向本来按「安卓全集白名单」过滤就会把它滤掉,
+ *  这张表是给 android-contract-sync 的「二选一分类」哨兵用的:PC 新增判别符必须显式承认
+ *  自己是 PC-only,否则那条测试会红(custom_js 事故的镜像教训)。 */
+export const PC_ONLY_TTS_PROVIDER_TYPES: ReadonlySet<string> = new Set<string>(["yukkuri"]);
+
 /** C3:导出方向的 TTS provider 清洗——type 不在 vendored 安卓全集内的整体过滤(否则会撑爆
- *  旧 APP 的 TTSProviderSetting 多态解码 = settings 恢复整体失败)。当前 PC 12 家与安卓逐字对齐,
- *  实际不会滤掉任何值;这是面向「PC 未来先加、APP 未跟上」的纵深防御。选中 id 由调用方重定位。 */
+ *  旧 APP 的 TTSProviderSetting 多态解码 = settings 恢复整体失败)。在线 12 家与安卓逐字对齐,
+ *  实际被滤掉的只有 PC-only 的 yukkuri(见上表);选中 id 由调用方重定位。 */
 export function filterTtsProvidersForAndroid(providers: unknown): unknown[] {
   if (!Array.isArray(providers)) return [];
   return providers.filter((p) => isRecord(p) && ANDROID_TTS_PROVIDER_TYPES.has(String(p.type)));
@@ -655,19 +680,33 @@ function buildAndroidDbFromVendoredSchema(dbPath: string, backupNameById?: Map<n
   }
 }
 
-/** 把 PC 记忆写进 rikka_hub.db 的 MemoryEntity 表(PC→APP 方向,§7.7)。表结构从
- *  cached.db 克隆(id INTEGER PK AUTOINCREMENT / assistant_id TEXT / content TEXT)。
- *  防御:cached.db 若来自老版 APP(无 MemoryEntity 表),跳过,不影响会话。
- *  id 不写:SQLite AUTOINCREMENT 分配(对称 APP→PC 导入丢弃 id 重分配,backup/import.ts)。
- *  时间戳不写:APP 的 MemoryEntity 表无此列。整体替换语义下助手+记忆同源 assistantId,天然匹配。 */
+/** Markdown 记忆文档(上游 Room 28+ 的 memory_file 形态):frontmatter + 每条记忆一行
+ *  `- [stated] 内容`。与 rikkelivo 的 _memory_entity_to_files / 上游迁移同一格式。 */
+export function memoryProfileMarkdown(contents: string[]): string {
+  const lines: string[] = [];
+  for (const content of contents) {
+    const collapsed = String(content ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join(" ").trim();
+    if (collapsed) lines.push(`- [stated] ${collapsed}`);
+  }
+  return "---\nname: profile\ndescription: Who the user is\n---\n\n" + lines.join("\n") + (lines.length ? "\n" : "");
+}
+
+/** 把 PC 记忆写进 rikka_hub.db(PC→APP 方向,§7.7)。已知两种上游形态:
+ *  - Room 28+ 的 `memory_file`(Markdown 记忆,按助手一份 /profile.md):当前主流;
+ *  - 老版 `MemoryEntity`(逐条,id INTEGER PK AUTOINCREMENT):兼容保留。
+ *  防御:两者都不存在(极老/空库)则跳过,不影响会话。
+ *
+ *  【契约偏离申辩】import.ts 头部声明的「Android 互导契约冻结」以 MemoryEntity 为前提写于
+ *  Room 27 时代。上游在 Room 28(Migration_28?) 把记忆改成 memory_file 后,旧写入路径在
+ *  3.x 备份上会静默丢全部记忆(读端同理)。本函数按「表在场优先」探测,不猜版本号:
+ *  旧库仍写 MemoryEntity,新库写 memory_file,行为都是上游真实可读的形态。
+ *  与 rikkelivo(rikkahub.py:1490-1555, 1630-1654)的口径一致;偏离只限这两张表的探测顺序。 */
 function insertMemoriesIntoDb(db: InstanceType<typeof Database>) {
-  const hasTable = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='MemoryEntity'").get();
-  if (!hasTable) return;
   // 实验：只把当前有效的记忆交给安卓；superseded / tombstone 不跨端。
   const flat = memoryStore.exportFlatActive();
   if (flat.length === 0) return;
-  const stmt = db.prepare("INSERT INTO MemoryEntity (assistant_id, content) VALUES (?, ?)");
   const seen = new Set<string>();
+  const byAssistant = new Map<string, string[]>();
   for (const m of flat) {
     const content = String(m.content ?? "").trim();
     if (!content) continue;
@@ -675,7 +714,25 @@ function insertMemoriesIntoDb(db: InstanceType<typeof Database>) {
     const key = `${assistantId} ${content}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    stmt.run(assistantId, content);
+    const list = byAssistant.get(assistantId) ?? [];
+    list.push(content);
+    byAssistant.set(assistantId, list);
+  }
+  if (byAssistant.size === 0) return;
+  const hasMemoryFile = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_file'").get();
+  if (hasMemoryFile) {
+    const stmt = db.prepare("INSERT INTO memory_file (assistant_id, path, content, updated_at) VALUES (?, ?, ?, ?)");
+    const now = Date.now();
+    for (const [assistantId, contents] of byAssistant) {
+      stmt.run(assistantId, "/profile.md", memoryProfileMarkdown(contents), now);
+    }
+    return;
+  }
+  const hasEntity = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='MemoryEntity'").get();
+  if (!hasEntity) return;
+  const stmt = db.prepare("INSERT INTO MemoryEntity (assistant_id, content) VALUES (?, ?)");
+  for (const [assistantId, contents] of byAssistant) {
+    for (const content of contents) stmt.run(assistantId, content);
   }
 }
 

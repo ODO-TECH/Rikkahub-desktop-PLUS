@@ -224,16 +224,96 @@ export function outputLimitFor(catalog: ModelCatalog | null, provider: Provider,
 
 /** 协议必填上限口的唯一取值(Anthropic 的 max_tokens 必填;pi 模型配置也要求给数)。
  *  三级:助手显式配置 > 目录真实上限 > 方言兜底 DEFAULT_OUTPUT_TOKENS,再收进窗口内。
+ *  给了 promptTokens 时再按剩余空间钳一道(S3),见 planOutputCap。
  *
  *  两条刻意的不作为:
- *  ① **不钳用户显式配置**。用户把上限填过大导致 400,正确的产品行为是给可行动报错
- *     (provider-errors 的 classifyOutputCapError),不是静默改小他的设置——目录可能
- *     偏低,静默截短答案是更难察觉的伤害。同哲学:代理死就报错,不擅自降级。
+ *  ① 用户显式配置**只在有本轮 prompt 估算时才钳**,且钳制必须留痕(见 planOutputCap)。
+ *     没有 prompt 信息时一律原样返回——目录可能偏低,凭猜静默截短答案是更难察觉的伤害。
  *  ② 上限**可选**的协议(OpenAI completions/responses、Google)在用户未配置时**根本不发
  *     这个字段**,不在这里凭目录补一个:不发 = 用服务端默认 = 恒合法,而发一个猜来的数
  *     就是本次报障的形态。安卓同语义(`if (params.maxTokens != null) put(...)`)。
- *     故本函数只服务"协议逼我必须给一个数"的场合。 */
+ *     故本函数只服务"协议逼我必须给一个数"的场合;可选口请用 planOutputCap。 */
 export function requiredOutputCap(
+  catalog: ModelCatalog | null,
+  provider: Provider,
+  modelId: string,
+  assistantMaxTokens: number | null | undefined,
+  promptTokens?: number | null,
+): number {
+  const plan = planOutputCap(catalog, provider, modelId, assistantMaxTokens, promptTokens);
+  if (plan.tokens != null) return plan.tokens;
+  // 空间不足但协议必填:不能省略字段,给剩余空间内的最小合法值(≥1)。答案被截短是
+  // 可感知的退化,整个请求 400 是功能不可用——两个方向的代价不对等(同文件头注纪律三)。
+  return Math.max(1, plan.headroom ?? 1);
+}
+
+/** 剩余输出空间(S3,参照 billion-context `window − 1.12×est − max(2048, 5%×est)`)。
+ *  1.12 覆盖启发式估算的系统性偏差,max(2048, 5%) 是安全垫——估算永远不是真 tokenizer,
+ *  顶格发上限就是把误差全部押在"估得刚好准"上。promptTokens 应是**校准后**的估算。 */
+export function outputHeadroomFor(contextWindow: number, promptTokens: number): number {
+  const prompt = Math.max(0, promptTokens);
+  // 整数比值写法(112/100、5/100)而不是 prompt*1.12:后者在二进制浮点下会得到
+  // 112000.00000000001,ceil 后凭空多扣 1 token,且随 prompt 取值抖动。
+  const padded = Math.ceil((prompt * 112) / 100);
+  const safety = Math.max(2048, Math.ceil((prompt * 5) / 100));
+  return Math.floor(contextWindow - padded - safety);
+}
+
+/** 低于此剩余空间就不值得再发上限字段:可选协议省略它,让上游用自己的默认
+ *  (OpenAI 的默认本就是"窗口剩多少给多少",比我们能算出来的更准)。 */
+export const MIN_OUTPUT_HEADROOM = 1024;
+
+export interface OutputCapPlan {
+  /** 出站上限;null = 剩余空间不足,可选协议应省略该字段。 */
+  tokens: number | null;
+  /** 被钳制前的原值(未钳时 null)——"钳了就说"的留痕依据。 */
+  clampedFrom: number | null;
+  /** 本轮剩余输出空间;未做钳制判定(无 prompt 估算/窗口未知)时 null。 */
+  headroom: number | null;
+}
+
+/** 上限取值 + 本轮剩余空间钳制。requiredOutputCap 是它的"必填协议"包装,
+ *  两者共用同一份四级取值,不允许各写一份。
+ *
+ *  钳制纪律(S3,重新界定旧注释里的"永不钳用户值"):那条纪律的立意是**别偷偷改用户
+ *  意图**,不是"宁可 400 也不钳"。所以这里钳,但钳制事实上错误中心留痕(warn 级,带原值
+ *  与钳后值)。没有 promptTokens 时行为与引入前逐字节一致。 */
+export function planOutputCap(
+  catalog: ModelCatalog | null,
+  provider: Provider,
+  modelId: string,
+  assistantMaxTokens: number | null | undefined,
+  promptTokens?: number | null,
+): OutputCapPlan {
+  const base = baseOutputCap(catalog, provider, modelId, assistantMaxTokens);
+  if (typeof promptTokens !== "number" || !Number.isFinite(promptTokens) || promptTokens <= 0) {
+    return { tokens: base, clampedFrom: null, headroom: null };
+  }
+  const window = contextWindowFor(catalog, provider, modelId);
+  if (window == null || window <= 0) return { tokens: base, clampedFrom: null, headroom: null };
+  const headroom = outputHeadroomFor(window, promptTokens);
+  if (headroom >= base) return { tokens: base, clampedFrom: null, headroom };
+  reportError(
+    "provider",
+    "warn",
+    `模型 ${modelId} 的输出上限已按本轮剩余窗口从 ${base} 钳到 ${Math.max(0, headroom)} tokens` +
+      `(窗口 ${window},上下文估算约 ${Math.round(promptTokens)})。回答可能被截短;` +
+      `如需完整回答,请先压缩上下文或换更大窗口的模型。`,
+    undefined,
+    "output_cap_clamped",
+    // 合并键带原值:同一模型的不同配置是不同事实(用户改了设置就该看到新的一条),
+    // 但不带本轮 prompt/钳后值——那每轮都变,会把错误中心刷成流水账。
+    { model: modelId, configured: base },
+  );
+  return {
+    tokens: headroom >= MIN_OUTPUT_HEADROOM ? headroom : null,
+    clampedFrom: base,
+    headroom,
+  };
+}
+
+/** 四级取值本体(与钳制无关):助手显式配置 > 目录真实上限 > 方言兜底,再收进窗口。 */
+function baseOutputCap(
   catalog: ModelCatalog | null,
   provider: Provider,
   modelId: string,

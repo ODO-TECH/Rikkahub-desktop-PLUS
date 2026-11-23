@@ -168,7 +168,7 @@ describe("调度 tick", () => {
     expect(queueLength(CONV)).toBe(1); // 只有占位那条,没有补跑
   });
 
-  test("开关关闭:到期也不投递;只关 schedulingEnabled 同样零副作用", () => {
+  test("调度关闭不投递；已退役的 Agent 总开关不再阻止明确启用的调度", () => {
     clearSchedules();
     const now = 5_000_000;
     const created = createSchedule(CONV, { goal: "关着", kind: "fixed_interval", intervalSeconds: 60 }, now);
@@ -179,7 +179,7 @@ describe("调度 tick", () => {
     expect(queueLength(CONV)).toBe(0);
 
     enableScheduling(false, true);
-    expect(runSchedulerTick(now + 120_000).delivered).toBe(0);
+    expect(runSchedulerTick(now + 120_000).delivered).toBe(1);
 
     // 记录仍在:开关关闭只停投递,不删记录。
     expect(getSchedule(CONV, created.ok ? created.schedule.id : "")).not.toBeNull();

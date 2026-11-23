@@ -1,4 +1,4 @@
-// search/index.ts — 搜索服务（19 种实现、连接测试、多 key failover、custom_js 脚本执行）
+// search/index.ts — 搜索服务（20 种实现、连接测试、多 key failover、custom_js 脚本执行）
 // 纪律：负责 search_web / scrape_web 工具的具体实现与搜索服务测试。
 // 不处理路由、不处理 SSE；请求日志暂经 ../server 的 addLog 记录（3.5 拆 api/ 时收敛）。
 
@@ -1087,6 +1087,53 @@ export async function runSearchWeb(params: Record<string, JsonValue>) {
     });
   }
 
+  // DeepSeek(官方工具 API,逐字对齐安卓 DeepSeekSearchService.kt):POST /v1/tools/search,
+  // body 只发 query + count(官方 1–50,安卓 coerceIn 同款)。结果文本取 summary,空则回落
+  // snippet(安卓 `summary.ifBlank { snippet }`)。need_content 不发——安卓同款:开了正文按量
+  // 另计,而 snippet/summary 已够模型引用,需要全文时用户会走 scrape_web。
+  if (type === "deepseek") {
+    return await withSearchKeyFailover(String(service.apiKey ?? ""), async (apiKey) => {
+      const endpoint = requireServiceEndpoint(service);
+      const requestBody = { query, count: Math.max(1, Math.min(50, maxResults)) };
+      const requestHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
+      const response = await fetchWithTimeout(endpoint, {
+        method: "POST",
+        headers: requestHeaders,
+        body: JSON.stringify(requestBody),
+      });
+      const { text, raw } = await parseJsonResponse(response);
+      addLog({
+        providerId: String(service.id ?? "search"),
+        providerName: nameOfSearchService(service),
+        url: endpoint,
+        ok: response.ok,
+        status: response.status,
+        kind: "tool:search_web",
+        toolName: "search_web",
+        durationMs: Date.now() - started,
+        method: "POST",
+        requestHeaders,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
+        requestBody: jsonBody(requestBody),
+        responseBody: textBody(text),
+        error: response.ok ? undefined : textBody(text),
+      });
+      if (!response.ok) throwSearchStatus(response.status, `DeepSeek search failed with code ${response.status}: ${text.slice(0, 500)}`);
+      const results = Array.isArray(raw.results) ? raw.results : [];
+      return {
+        query,
+        service: "DeepSeek",
+        items: results.slice(0, maxResults).map((item: any, index: number) =>
+          searchResult(index, {
+            title: item?.title,
+            url: item?.url,
+            text: String(item?.summary ?? "").trim() || String(item?.snippet ?? ""),
+          }),
+        ),
+      };
+    });
+  }
+
   if (type === "custom_js") {
     const result = await runCustomJsSearch(service, query, maxResults);
     addLog({
@@ -1279,6 +1326,45 @@ export async function runScrapeWeb(params: Record<string, JsonValue>) {
         description: item?.description,
         language: item?.language,
         text: String(item?.text ?? "").slice(0, 12000),
+      };
+    });
+  }
+  // DeepSeek scrape:POST /v1/tools/fetch,返回 {title, content}(Markdown)。与安卓
+  // DeepSeekSearchService.scrape 同款——单 url、单结果,不做批量。
+  if (type === "deepseek") {
+    return await withSearchKeyFailover(String(service.apiKey ?? ""), async (apiKey) => {
+      const endpoint = requireServiceEndpoint(service, "fetch");
+      const requestBody = { url: target };
+      const requestHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
+      const response = await fetchWithTimeout(endpoint, {
+        method: "POST",
+        headers: requestHeaders,
+        body: JSON.stringify(requestBody),
+      });
+      const { text, raw } = await parseJsonResponse(response);
+      addLog({
+        providerId: String(service.id ?? "search"),
+        providerName: nameOfSearchService(service),
+        url: endpoint,
+        ok: response.ok,
+        status: response.status,
+        kind: "tool:scrape_web",
+        toolName: "scrape_web",
+        durationMs: Date.now() - started,
+        method: "POST",
+        requestHeaders,
+        responseHeaders: Object.fromEntries(response.headers.entries()),
+        requestBody: jsonBody(requestBody),
+        responseBody: textBody(text),
+        error: response.ok ? undefined : textBody(text),
+      });
+      if (!response.ok) throwSearchStatus(response.status, `DeepSeek fetch failed for ${target} with code ${response.status}: ${text.slice(0, 500)}`);
+      return {
+        url: target,
+        title: raw?.title || undefined,
+        description: undefined,
+        language: undefined,
+        text: String(raw?.content ?? "").slice(0, 12000),
       };
     });
   }
@@ -1492,6 +1578,19 @@ export async function testSearchService(service: SearchService) {
           tools: [{ type: "web_search" }, { type: "x_search" }],
           store: false,
         }),
+      });
+      const text = await response.text();
+      if (!response.ok) throwSearchStatus(response.status, `${response.status}: ${text.slice(0, 500)}`);
+      return text;
+    });
+  }
+  if (type === "deepseek") {
+    const endpoint = requireServiceEndpoint(service);
+    return runSearchKeyTestResult(name, endpoint, apiKey, async (k) => {
+      const response = await fetchWithTimeout(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${k}` },
+        body: JSON.stringify({ query: "RikkaHub", count: 1 }),
       });
       const text = await response.text();
       if (!response.ok) throwSearchStatus(response.status, `${response.status}: ${text.slice(0, 500)}`);

@@ -565,6 +565,9 @@ function McpServerEditor({
           />
 
           <SettingsGroup title={t("settings:mcp.connection_title")} fields>
+            <SettingsField label={t("settings:mcp.requires_workspace")} hint={t("settings:mcp.requires_workspace_hint")}>
+              <Switch checked={draft.requiresWorkspace === true} onCheckedChange={(checked)=>patchDraft({...draft,requiresWorkspace:checked})}/>
+            </SettingsField>
             {isBuiltin ? (
               // 进程内传输：没有地址、没有子进程、没有授权，唯一的变量就是开关。
               <>

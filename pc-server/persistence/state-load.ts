@@ -39,6 +39,11 @@ import {
 import { normalizeSshDevices } from "../ssh/devices";
 import { normalizeSubagentConfig } from "../foundation/types/settings/subagent-config";
 import { normalizeAgentLoopConfig } from "../foundation/types/settings/agent-loop-config";
+import { normalizeContextBudgetConfig } from "../foundation/types/settings/context-budget-config";
+import { normalizeContextToolsConfig } from "../foundation/types/settings/context-tools-config";
+import { normalizeDebugServerConfig } from "../foundation/types/settings/debug-server-config";
+import { normalizePtcConfig } from "../foundation/types/settings/ptc-config";
+import { normalizeResultClipConfig } from "../foundation/types/settings/result-clip-config";
 import { normalizeWorkspaceToolsConfig } from "../foundation/types/settings/workspace-tools-config";
 import { normalizeImAccess } from "../im/config";
 import { ensureBuiltinMcpServers } from "../tools/mcp-builtin";
@@ -130,6 +135,26 @@ export function normalizeState(input: Partial<State>): State {
   );
   // 自主循环(PC-only):老 state 无此键 → 全默认(关闭),行为不变。
   normalized.settings.agentLoop = normalizeAgentLoopConfig((parsedSettings as unknown as Record<string, unknown>).agentLoop);
+  // 上下文预算/工具输出老化(PC-only):老 state 无此键 → 全默认(关闭),行为不变。
+  normalized.settings.contextBudget = normalizeContextBudgetConfig(
+    (parsedSettings as unknown as Record<string, unknown>).contextBudget,
+  );
+  // 模型驱动上下文工具面(PC-only,仅工作区):老 state 无此键 → 全默认(关闭),行为不变。
+  normalized.settings.contextTools = normalizeContextToolsConfig(
+    (parsedSettings as unknown as Record<string, unknown>).contextTools,
+  );
+  // 本地调试端口(PC-only):老 state 无此键 → 关闭;端口越界/令牌损坏逐项回落。
+  normalized.settings.debugServer = normalizeDebugServerConfig(
+    (parsedSettings as unknown as Record<string, unknown>).debugServer,
+  );
+  // 工具结果头尾裁剪(PC-only):老 state 无此键 → 默认开启(阈值内逐字节不变)。
+  normalized.settings.resultClip = normalizeResultClipConfig(
+    (parsedSettings as unknown as Record<string, unknown>).resultClip,
+  );
+  // 程序化工具面(PC-only,仅工作区):老 state 无此键 → 默认开(normalize 给默认)。
+  normalized.settings.ptc = normalizePtcConfig(
+    (parsedSettings as unknown as Record<string, unknown>).ptc,
+  );
   normalized.settings.dismissedProviderIds = uniqueStrings(getStringArray(normalized.settings.dismissedProviderIds));  normalized.settings.dismissedAssistantIds = uniqueStrings(getStringArray(normalized.settings.dismissedAssistantIds));
   const dismissedProviderIds = new Set(normalized.settings.dismissedProviderIds);
   const dismissedAssistantIds = new Set(normalized.settings.dismissedAssistantIds);
@@ -268,6 +293,15 @@ export function normalizeState(input: Partial<State>): State {
   normalized.settings.translatePrompt = normalized.settings.translatePrompt || DEFAULT_TRANSLATION_PROMPT;
   normalized.settings.suggestionPrompt = normalized.settings.suggestionPrompt || DEFAULT_SUGGESTION_PROMPT;
   normalized.settings.ocrPrompt = normalized.settings.ocrPrompt || DEFAULT_OCR_PROMPT;
+  // DeepSeek 官方 OCR(PC-only 三键)归一:布尔严格判等(老 state 缺键 = false = 关闭时行为
+  // 与引入前一致)、Key 去首尾空白、purpose 只认官方两个值,值域外一律回落默认。
+  // 刻意不 import media/ocr 的同名函数:ocr.ts 要读 json-store,而 json-store 走本文件归一,
+  // 引一下就成了 state-load → ocr → json-store → state-load 的环。
+  normalized.settings.deepseekOcrEnabled = normalized.settings.deepseekOcrEnabled === true;
+  normalized.settings.deepseekOcrApiKey = String(normalized.settings.deepseekOcrApiKey ?? "").trim();
+  normalized.settings.deepseekOcrPurpose = String(normalized.settings.deepseekOcrPurpose ?? "").trim() === "rich_layout_recognition"
+    ? "rich_layout_recognition"
+    : "text_recognition";
   normalized.settings.compressPrompt = normalized.settings.compressPrompt || DEFAULT_COMPRESS_PROMPT;
   normalized.settings.promptOptimizePrompt = normalized.settings.promptOptimizePrompt || DEFAULT_PROMPT_OPTIMIZE_PROMPT;
   // 快速模型收敛(对齐 APP 2.4.16):标题/建议改用统一 fastModelId。老 state 若只有独立的
@@ -455,6 +489,7 @@ export function normalizeState(input: Partial<State>): State {
   const backfillSearchPresets: Array<Record<string, JsonValue>> = [
     { type: "doubao", id: id(), name: "豆包", apiKey: "", mode: "custom" },
     { type: "serper", id: id(), name: "Serper", apiKey: "" },
+    { type: "deepseek", id: id(), name: "DeepSeek", apiKey: "" },
     { type: "tinyfish", id: id(), name: "Tinyfish", apiKey: "" },
     { type: "firecrawl", id: id(), name: "Firecrawl", apiKey: "" },
     { type: "grok", id: id(), name: "Grok", apiKey: "", customUrl: "https://api.x.ai/v1/responses", model: "grok-4-fast" },

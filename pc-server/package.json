@@ -15,8 +15,8 @@
     "version:bump": "bun run scripts/bump-version.ts",
     "build:bash-bundle": "bun run scripts/build-bash-bundle.ts",
     "deploy:portable": "bun run scripts/deploy-portable.ts",
-    "compile": "bun install && bun run scripts/ensure-build-dirs.ts && bun run scripts/build-bash-bundle.ts && bun build --compile --target=bun-windows-x64 server.ts --outfile ../dist/rikkahub-pc.exe && bun run scripts/sync-dist-assets.ts && bun -e \"await Bun.write('../web-ui/src-tauri/binaries/rikkahub-server-x86_64-pc-windows-msvc.exe', Bun.file('../dist/rikkahub-pc.exe'))\"",
-    "compile:linux": "bun install && bun run scripts/ensure-build-dirs.ts && bun build --compile --target=bun-linux-x64 server.ts --outfile ../dist/rikkahub-pc"
+    "compile": "bun install && bun run scripts/ensure-build-dirs.ts && bun run scripts/build-bash-bundle.ts && bun build --compile --minify --keep-names --target=bun-windows-x64 server.ts --outfile ../dist/rikkahub-pc.exe && bun run scripts/sync-dist-assets.ts && bun -e \"await Bun.write('../web-ui/src-tauri/binaries/rikkahub-server-x86_64-pc-windows-msvc.exe', Bun.file('../dist/rikkahub-pc.exe'))\"",
+    "compile:linux": "bun install && bun run scripts/ensure-build-dirs.ts && bun build --compile --minify --keep-names --target=bun-linux-x64 server.ts --outfile ../dist/rikkahub-pc"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
@@ -27,8 +27,11 @@
   "dependencies": {
     "@tencent-connect/qqbot-nodejs": "1.0.4",
     "diff": "8.0.4",
+    "koffi": "^3.3.8",
     "mupdf": "^1.27.0",
+    "pinyin-pro": "^3.29.5",
     "qrcode": "^1.5.4",
+    "quickjs-emscripten": "0.32.0",
     "ssh2": "^1.17.0"
   }
 }

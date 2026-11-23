@@ -15,6 +15,7 @@ import { AgentTaskScheduler } from "./agent-loop/scheduler";
 import { getStartupStatus, isStartupReady, markStartupFailed, markStartupReady } from "./foundation/startup-gate";
 import { DataDirLockedError, acquireDataDirLock, releaseDataDirLock } from "./persistence/instance-lock";
 import { runDataDirHygiene } from "./persistence/data-dir-hygiene";
+import { warmupYukkuriIfConfigured } from "./media/tts";
 import { abortGeneration, generating } from "./conversations/generation-state";
 import { handleAuthTokenRequest, handleWebAuthStatus, isWebAuthAuthorized, warnIfExposedWithoutAuth } from "./api/auth";
 import { routeStatic } from "./api/static";
@@ -36,6 +37,9 @@ import { stopAllImAdapters } from "./im/registry";
 import { maybeRunExtractionWorker } from "./files/extraction";
 import { primeFirstSpawn } from "./foundation/spawn-warm";
 import { createGracefulShutdown } from "./shutdown";
+import { configureDebugServer, prepareDebugLogging, stopDebugServer } from "./debug/server";
+
+const processStartedAt = Date.now();
 
 // 全面审查 4-2:进程级异常兜底必须最早安装,罩住后续启动期与运行期的一切
 // 定时器/游离 Promise 顶层抛错(SIGINT/SIGTERM 的优雅停机在文件尾另行注册)。
@@ -276,31 +280,10 @@ function serveOn(hostname: string, port: number) {
           if (hasProxyForwardHeaders(request) || !isLoopbackAddress(ip)) {
             return error("Forbidden: restart is loopback-only", 403);
           }
-          if (RUNNING_IN_CONTAINER) {
-            return error("容器内不能从进程内部重启（会连容器一起退出），请重启容器", 400);
-          }
-          // 壳管后端由壳的协议重启；从内部自重启会让壳持有的进程句柄与 Job Object
-          // 生命周期脱节（壳退出时收不到新进程）。
-          if (process.env.RIKKAHUB_SHELL === "webview2") {
-            return error("当前后端由桌面壳管理，请通过壳的重启入口重启", 409, "restart_managed_by_shell");
-          }
-          // 低完整性进程无法把自己提回 Medium：关沙盒要做的标签还原只能由下一次 Medium
-          // 启动完成，自重启只会得到一个同样受限的替代进程，开关看起来毫无反应。
-          if (process.env.RIKKAHUB_SANDBOX_LAUNCHED === "1" && !peekSandboxRestricted()) {
-            return error(
-              "受限沙盒正在生效。关闭它需要先完全退出当前后端进程，再以普通权限重新启动应用（低完整性进程无法自行解除限制）",
-              409,
-              "restart_requires_medium_process",
-            );
-          }
-          // 已经在停机途中（信号/另一请求）：重启标记来不及参与本次退出，如实拒绝，
-          // 不让调用方误以为替代进程会起来。
-          if (gracefulShutdown.started()) {
-            return error("服务正在关闭，请稍后重新打开应用", 409, "restart_during_shutdown");
-          }
-          restartRequested = true;
-          await gracefulShutdown.run({ fromHttp: true });
-          return json({ ok: true, pid: process.pid, restarting: true });
+          const result = await attemptAppRestart();
+          return result.ok
+            ? json({ ok: true, pid: result.pid, restarting: true })
+            : error(result.message ?? "重启被拒绝", result.status, result.code);
         }
         // Web 鉴权（阶段 5.2）：仅在配置了访问密码时生效。auth/token 端点先于
         // 鉴权检查处理（它就是换 token 的入口）；其余 /api/* 一律要求有效 token。
@@ -515,6 +498,8 @@ void (async () => {
   // R1-13:数据目录卫生(超龄 corrupt 隔离、过时安装包、化石快照、孤儿附件统计)。
   // 就绪后台执行,内部自捕获,绝不影响运行。
   void runDataDirHygiene();
+  // 油库里(AquesTalk)本地朗读:配置了才预热 DLL 与词典句柄,没配就完全不碰 koffi。
+  void warmupYukkuriIfConfigured();
   // 懒加载 models.dev 模型目录(用于 context window 显示)。fire-and-forget,失败不影响启动。
   // 加载完成后回填模型官方显示名(只认领还顶着裸 id 的行,幂等;见 display-names.ts)。
   void loadModelsDev().then(() => backfillModelDisplayNames(modelsDevCache));
@@ -600,6 +585,8 @@ function spawnReplacementProcess(): void {
 const gracefulShutdown = createGracefulShutdown({
   stopIngress(closeActiveConnections) {
     originRelay.stopAll();
+    // 调试口与主入口同生共死:绝不在主服务退出后留一个无状态的回环监听。
+    stopDebugServer();
     stopListeners(listeners, closeActiveConnections);
   },
   async stopProducers() {
@@ -624,6 +611,57 @@ const gracefulShutdown = createGracefulShutdown({
     process.exit(code);
   },
 });
+
+interface RestartAttempt {
+  ok: boolean;
+  /** HTTP 语义状态码,调试口与 /api/app/restart 共用同一份判定。 */
+  status: number;
+  code?: string;
+  message?: string;
+  pid?: number;
+}
+
+/** 自重启的唯一实现:容器/壳管后端/低完整性/停机途中四道闸,拒绝原因原样交给调用方。
+ *  /api/app/restart 与调试口 POST /debug/restart 都走这里,任何一处改闸门两边同时生效。 */
+async function attemptAppRestart(): Promise<RestartAttempt> {
+  if (RUNNING_IN_CONTAINER) {
+    return { ok: false, status: 400, message: "容器内不能从进程内部重启（会连容器一起退出），请重启容器" };
+  }
+  // 壳管后端由壳的协议重启；从内部自重启会让壳持有的进程句柄与 Job Object
+  // 生命周期脱节（壳退出时收不到新进程）。
+  if (process.env.RIKKAHUB_SHELL === "webview2") {
+    return { ok: false, status: 409, code: "restart_managed_by_shell", message: "当前后端由桌面壳管理，请通过壳的重启入口重启" };
+  }
+  // 低完整性进程无法把自己提回 Medium：关沙盒要做的标签还原只能由下一次 Medium
+  // 启动完成，自重启只会得到一个同样受限的替代进程，开关看起来毫无反应。
+  if (process.env.RIKKAHUB_SANDBOX_LAUNCHED === "1" && !peekSandboxRestricted()) {
+    return {
+      ok: false,
+      status: 409,
+      code: "restart_requires_medium_process",
+      message: "受限沙盒正在生效。关闭它需要先完全退出当前后端进程，再以普通权限重新启动应用（低完整性进程无法自行解除限制）",
+    };
+  }
+  // 已经在停机途中（信号/另一请求）：重启标记来不及参与本次退出，如实拒绝，
+  // 不让调用方误以为替代进程会起来。
+  if (gracefulShutdown.started()) {
+    return { ok: false, status: 409, code: "restart_during_shutdown", message: "服务正在关闭，请稍后重新打开应用" };
+  }
+  restartRequested = true;
+  await gracefulShutdown.run({ fromHttp: true });
+  return { ok: true, status: 200, pid: process.pid };
+}
+
+// 调试口重启回调与运行信息。必须在 bootstrap 拉起调试口之前接线。
+configureDebugServer({
+  api:routeApi,
+  restart: async () => {
+    const result = await attemptAppRestart();
+    return { ok: result.ok, code: result.code, message: result.message, pid: result.pid };
+  },
+  info: () => ({ startedAt: processStartedAt, mainPort: port }),
+});
+prepareDebugLogging();
 
 function shutdown(): void {
   void gracefulShutdown.run();

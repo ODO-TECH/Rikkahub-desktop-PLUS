@@ -18,6 +18,7 @@
 import type { JsonValue, ToolOutputEntry } from "../foundation/types";
 import { isRecord } from "../foundation/utils";
 import type { LoopDecision, LoopToolObservation } from "../inference-engine/events";
+import type { AgentRoundSummary } from "./types";
 import { isPlanV2, isPlanV3, type Plan, type PlanStep } from "../tools/plan";
 import { analyzePlanGraph } from "../tools/plan-graph";
 
@@ -26,6 +27,9 @@ export interface AgentLoopControllerConfig {
   stallRepeatLimit: number;
   sameErrorLimit: number;
   requireVerifiedCompletion: boolean;
+  /** S-F5:单轮工具输出体积预算(token,0 = 关)。超限先注入一次收口提示,
+   *  连续两轮超限 → awaiting_user——用真实体积而不是轮数做刹车。 */
+  roundBudgetTokens?: number;
 }
 
 /** 计划读取/记账回调。判定器保持零 I/O:计划由调用方现读,事件由调用方落库。 */
@@ -42,7 +46,7 @@ export interface AgentLoopControllerDeps {
   /** 判定为停滞时调用(运行记录:stall 事件 + 相位)。 */
   onStall?: (info: {
     reason: string;
-    kind: "repeat" | "same_error" | "unsettled" | "exhausted";
+    kind: "repeat" | "same_error" | "unsettled" | "exhausted" | "budget";
   }) => void;
   /** 计划里出现目标时回调(运行记录回填 goal 快照)。 */
   onGoal?: (goal: string) => void;
@@ -217,6 +221,8 @@ export class AgentLoopController {
   private repeatOutput: string | null = null;
   private repeatCount = 0;
   private repeatHintedKey: string | null = null;
+  /** S-F5:连续超预算的轮数(预算刹车用;降到预算内即清零)。 */
+  private roundBudgetStrikes = 0;
 
   // 连续同错。
   private errorSignature: string | null = null;
@@ -230,6 +236,7 @@ export class AgentLoopController {
   // 最终轮校验:同一份未了结指纹只重采样一次。
   private verifyInjections = 0;
   private verifyFingerprint: string | null = null;
+  private recentEvidence: Array<{ toolCallId: string; toolName: string }> = [];
 
   constructor(config: AgentLoopControllerConfig, deps: AgentLoopControllerDeps) {
     this.config = {
@@ -237,6 +244,7 @@ export class AgentLoopController {
       stallRepeatLimit: Math.max(2, Math.floor(config.stallRepeatLimit)),
       sameErrorLimit: Math.max(2, Math.floor(config.sameErrorLimit)),
       requireVerifiedCompletion: config.requireVerifiedCompletion,
+      roundBudgetTokens: Math.max(0, Math.floor(config.roundBudgetTokens ?? 0)),
     };
     this.deps = deps;
   }
@@ -246,7 +254,13 @@ export class AgentLoopController {
   }
 
   /** 一次工具批执行完(下一次模型请求前)。 */
-  evaluateToolRound(observations: LoopToolObservation[]): LoopDecision {
+  evaluateToolRound(observations: LoopToolObservation[], roundSummary?: AgentRoundSummary | null): LoopDecision {
+    for (const { toolCallId, toolName, errorSignature } of observations) {
+      if (toolName === "update_plan" || errorSignature || !toolCallId) continue;
+      this.recentEvidence = this.recentEvidence.filter(item => item.toolCallId !== toolCallId);
+      this.recentEvidence.push({ toolCallId, toolName });
+    }
+    this.recentEvidence = this.recentEvidence.slice(-12);
     const plan = this.deps.readPlan();
     if (plan?.goal) this.deps.onGoal?.(plan.goal);
     const verification = plan
@@ -347,6 +361,31 @@ export class AgentLoopController {
       };
     }
 
+    // S-F5:单轮体积预算刹车(默认 0 = 关)。硬停滞规则先判:同一调用原地打转时
+    // 体积提示没有意义。先注入一次收口提示;连续两轮仍超限 → 交给人。
+    const budget = this.config.roundBudgetTokens ?? 0;
+    if (budget > 0 && roundSummary) {
+      if (roundSummary.rawTokensEst > budget) {
+        this.roundBudgetStrikes += 1;
+        const detail =
+          `this round's ${roundSummary.calls + roundSummary.nestedCalls} tool call(s) produced ~${roundSummary.rawTokensEst} tokens of output ` +
+          `(budget ${budget}).`;
+        if (this.roundBudgetStrikes >= 2) {
+          const reason = `连续两轮工具输出超出单轮预算(${detail} 已省 ~${Math.round(roundSummary.savedTokensEst)} token)`;
+          this.deps.onStall?.({ reason, kind: "budget" });
+          return { action: "halt", status: "awaiting_user", reason };
+        }
+        return {
+          action: "inject",
+          text:
+            `Output budget: ${detail} ` +
+            `Narrow the next round — read with offset/limit, grep instead of dumping files, pipe long shell output through head, ` +
+            `and filter inside run_code so only the needed lines reach the model. If the task truly needs this volume, say so explicitly.`,
+        };
+      }
+      this.roundBudgetStrikes = 0;
+    }
+
     if (repeatHint) {
       this.repeatHintedKey = this.repeatKey;
       return {
@@ -393,7 +432,7 @@ export class AgentLoopController {
       const reason = graph
         ? `任务图仍未了结(ready ${verification.ready?.join(",") || "无"};blocked ${
             Object.keys(verification.blocked ?? {}).join(",") || "无"
-          };retryable ${verification.retryable?.join(",") || "无"}),重采样后无进展`
+          };retryable ${verification.retryable?.join(",") || "无"};unverified ${verification.unverified.join(",") || "无"}),重采样后无进展`
         : `计划仍未了结(${fingerprint.replace("|", " / ")}),重采样后无进展`;
       this.deps.onStall?.({ reason, kind: "unsettled" });
       return { action: "halt", status: "stalled", reason };
@@ -431,8 +470,12 @@ export class AgentLoopController {
     if (verification.unverified.length) {
       parts.push(
         `Steps marked completed without tool evidence: ${verification.unverified.join(", ")}. ` +
-          `Add the toolCallId(s) that produced them to the step's evidence, or do the work and then mark it complete.`,
+          `Call update_plan to repair each step's evidence array with the actual toolCallId(s), ` +
+          `for example {"id":"${verification.unverified[0]}","status":"completed","evidence":["actual_tool_call_id"]}. ` +
+          `Keep the step's content and other fields. The verify field describes a check; it does not record evidence. ` +
+          `Reuse relevant successful results instead of rerunning actions solely to produce evidence.`,
       );
+      if (this.recentEvidence.length) parts.push(`Recent successful calls: ${JSON.stringify(this.recentEvidence)}. Use only calls that support the step.`);
     }
     parts.push(
       graph

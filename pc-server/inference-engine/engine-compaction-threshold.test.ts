@@ -1,8 +1,10 @@
 // inference-engine/engine-compaction-threshold.test.ts — 自动压缩阈值与钉住判定的纯函数契约
 //
 // 阶段三/四的判定全部收在 engine-compaction(引擎中性单源):
-//   - 阈值 = contextWindow − 16384,严格大于才触发(与前端告警条同口径,也与 pi 的
-//     shouldCompact 语义一致);窗口未知/过小一律不猜、不触发。
+//   - 阈值 = contextWindow − reserveTokensFor(window, outputLimit),严格大于才触发
+//     (与前端告警条同口径,也与 pi 的 shouldCompact 语义一致);窗口未知一律不猜。
+//   - S3 起预留跟模型输出上限走(下限 2048、上限 0.5×窗口),不再写死 16384——
+//     小窗口模型因此**有**自动压缩,而不是像旧口径那样直接 null。
 //   - 钉住识别与"切点前钉住集"的选取:只认 pinned 注解,只取切点之前的消息。
 
 import { describe, expect, test } from "bun:test";
@@ -14,31 +16,63 @@ import {
   isPinnedMessage,
   mergeCompactionSummary,
   pinnedMessagesBefore,
+  reserveTokensFor,
   shouldAutoCompact,
 } from "./engine-compaction";
 
-describe("自动压缩阈值(阶段三)", () => {
-  test("阈值 = 窗口 − 16384,严格大于才触发(等于阈值仍是安全区)", () => {
-    expect(COMPACTION_RESERVE_TOKENS).toBe(16384);
-    expect(compactionThresholdFor(32768)).toBe(16384);
-    expect(shouldAutoCompact(16384, 32768)).toBe(false);
-    expect(shouldAutoCompact(16385, 32768)).toBe(true);
+describe("自动压缩阈值(阶段三 + S3 预留跟输出上限走)", () => {
+  test("预留 = min(输出上限, 窗口 1/4),下限 2048;严格大于阈值才触发", () => {
+    // 输出上限未知 → 按窗口 1/4。32k 窗口:8192 预留,阈值 24576(旧口径是 16384/50%)。
+    expect(COMPACTION_RESERVE_TOKENS).toBe(16384); // 兜底常量仍在(无窗口信息时用)
+    expect(reserveTokensFor(32768)).toBe(8192);
+    expect(compactionThresholdFor(32768)).toBe(24576);
+    expect(shouldAutoCompact(24576, 32768)).toBe(false);
+    expect(shouldAutoCompact(24577, 32768)).toBe(true);
     expect(shouldAutoCompact(0, 32768)).toBe(false);
   });
 
-  test("窗口未知或小于等于保留区 → 不触发(不猜窗口)", () => {
-    expect(compactionThresholdFor(null)).toBeNull();
-    expect(compactionThresholdFor(undefined)).toBeNull();
-    expect(compactionThresholdFor(16384)).toBeNull();
-    expect(compactionThresholdFor(16383)).toBeNull();
-    expect(compactionThresholdFor(0)).toBeNull();
-    expect(shouldAutoCompact(1_000_000, null)).toBe(false);
-    expect(shouldAutoCompact(1_000_000, 8000)).toBe(false);
+  test("方案效果对照表:8k/4k、32k/8k、200k/32k、1M/64k", () => {
+    expect(reserveTokensFor(8192, 4096)).toBe(2048);
+    expect(compactionThresholdFor(8192, 4096)).toBe(6144); // 75%
+    expect(reserveTokensFor(32768, 8192)).toBe(8192);
+    expect(compactionThresholdFor(32768, 8192)).toBe(24576); // 75%
+    expect(reserveTokensFor(200_000, 32768)).toBe(32768);
+    expect(compactionThresholdFor(200_000, 32768)).toBe(167_232); // 83.6%
+    expect(reserveTokensFor(1_000_000, 65536)).toBe(65536);
+    expect(compactionThresholdFor(1_000_000, 65536)).toBe(934_464); // 93.4%
   });
 
-  test("非有限窗口不触发", () => {
+  test("输出上限大于窗口 1/4 时不吃掉更多窗口(取 min)", () => {
+    expect(reserveTokensFor(32768, 32768)).toBe(8192);
+    expect(reserveTokensFor(200_000, 131_072)).toBe(50_000);
+  });
+
+  test("小窗口:2048 下限也不吃掉半个窗口以上,阈值恒为正", () => {
+    // 4k 窗口:1/4 = 1024 < 下限 2048,取 2048(恰好半窗)。
+    expect(reserveTokensFor(4096)).toBe(2048);
+    expect(compactionThresholdFor(4096)).toBe(2048);
+    // 2k 窗口:下限被 0.5×窗口 封顶,阈值仍是正数(旧口径这里返回 null = 永不压缩)。
+    expect(reserveTokensFor(2048)).toBe(1024);
+    expect(compactionThresholdFor(2048)).toBe(1024);
+    expect(shouldAutoCompact(1500, 2048)).toBe(true);
+    expect(compactionThresholdFor(1024)).toBe(512);
+  });
+
+  test("窗口未知/非正 → 不触发(不猜窗口)", () => {
+    expect(compactionThresholdFor(null)).toBeNull();
+    expect(compactionThresholdFor(undefined)).toBeNull();
+    expect(compactionThresholdFor(0)).toBeNull();
+    expect(compactionThresholdFor(-1)).toBeNull();
+    expect(shouldAutoCompact(1_000_000, null)).toBe(false);
+  });
+
+  test("非有限窗口不触发;非法输出上限退回按比例估", () => {
     expect(compactionThresholdFor(Number.NaN)).toBeNull();
     expect(compactionThresholdFor(Number.POSITIVE_INFINITY)).toBeNull();
+    expect(reserveTokensFor(32768, null)).toBe(8192);
+    expect(reserveTokensFor(32768, 0)).toBe(8192);
+    expect(reserveTokensFor(32768, -5)).toBe(8192);
+    expect(reserveTokensFor(32768, Number.NaN)).toBe(8192);
   });
 });
 

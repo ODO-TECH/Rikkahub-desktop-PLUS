@@ -85,6 +85,8 @@ export async function executeToolCall(
   assistant: Assistant,
   context?: import("../inference-engine/events").ToolContext,
 ) {
+  // Settings may have changed during this generation (Skill/MCP installation).
+  assistant = state.settings.assistants.find(item => item.id === assistant.id) ?? assistant;
   const name = String(toolCall.function?.name ?? "");
   let args: Record<string, JsonValue> = {};
   try {
@@ -172,6 +174,7 @@ export async function executeToolCall(
           allowGoalChange: context?.planContext?.allowGoalChange === true,
           taskGraph: true,
           requireVerified: state.settings.agentLoop.requireVerifiedCompletion === true,
+          availableEvidence: context?.planContext?.availableEvidence,
         },
       );
     }

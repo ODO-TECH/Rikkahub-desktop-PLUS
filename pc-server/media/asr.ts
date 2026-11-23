@@ -1,10 +1,10 @@
-// media/asr.ts — 语音识别（OpenAI Realtime / DashScope / 火山引擎实时会话、MiMo 分段识别与文件转写）
+// media/asr.ts — 语音识别（OpenAI Realtime / DashScope / 火山引擎实时会话、MiMo 与 DeepSeek 分段识别、文件转写）
 // 纪律：负责 ASR Provider 默认值/归一化、WebSocket 实时会话与转写实现，不处理路由。
 // 请求日志暂经 ../server 的 addLog 记录（3.5 拆 api/ 时收敛）。
 
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { AsrProvider, AsrRealtimeSession } from "../foundation/types";
-import { PC_KNOWN_ASR_TYPES } from "../foundation/types";
+import { PC_KNOWN_ASR_TYPES, PC_SEGMENTED_HTTP_ASR_TYPES } from "../foundation/types";
 import { id, isRecord } from "../foundation/utils";
 import { fetchWithTimeout, resolveEffectiveProxy, shouldBypassProxy } from "../foundation/net";
 import { state } from "../persistence/json-store";
@@ -60,6 +60,20 @@ export function defaultAsrProvider(type: AsrProvider["type"] = "openai_realtime"
       segmentDurationSec: 30,
     };
   }
+  if (type === "deepseek") {
+    // 与安卓 ASRProviderSetting.DeepSeek 同形(字段名逐字一致,备份往返无损):HTTP 分段识别,
+    // 官方 POST {baseUrl}/v1/tools/asr。没有 model/language 参数——官方自动识别语种、不选模型。
+    return {
+      type,
+      id: id(),
+      name: "DeepSeek ASR",
+      apiKey: "",
+      websocketUrl: "",
+      baseUrl: "https://api.deepseek.com",
+      sampleRate: 16000,
+      segmentDurationSec: 30,
+    };
+  }
   return {
     type: "openai_realtime",
     id: id(),
@@ -88,8 +102,8 @@ export function normalizeAsrProviders(value: unknown): AsrProvider[] {
   return records
     .map((item) => {
       const rawType = String(item.type ?? "");
-      // 跨端往返保真(backup C4):APP 有 5 家 ASR(openai_realtime/dashscope/volcengine/
-      // mimo/step),桌面端实现前 4 家。step 在存储层必须原样保留 type——若在此收敛成
+      // 跨端往返保真(backup C4):APP 有 6 家 ASR(openai_realtime/dashscope/volcengine/
+      // mimo/step/deepseek),桌面端实现其中 5 家。step 在存储层必须原样保留 type——若在此收敛成
       // openai_realtime,用户精心配的阶跃 ASR 会在 APP→PC→APP 往返里被无声没收(这正是
       // "导入了一点反应都没有"的实锤之一)。保留后消费点显式降级(见 isPcKnownAsrType 守卫)。
       const type = isPcKnownAsrType(rawType) ? rawType : rawType || "openai_realtime";
@@ -225,6 +239,99 @@ async function transcribeWithMimo(file: File, provider: AsrProvider): Promise<st
   );
 }
 
+// ---------------------------------------------------------------------------
+// DeepSeek ASR：官方工具 API 的 HTTP 分段识别（对齐安卓 DeepSeekASRController，
+// https://api-docs.deepseek.com/zh-cn/api/asr）。协议要点：
+//   POST {baseUrl}/v1/tools/asr，multipart **只有 file 一个字段**（官方文档明说多发字段 400）
+//   header: Authorization: Bearer
+//   音频只接受 16-bit PCM WAV 或 Ogg Opus；单次 ≤120 秒且 ≤8 MiB；没有模型/语种参数（自动识别）
+//   响应 { request_id, text, duration_ms } —— 非流式，整段一次返回
+// 与 MiMo 同属「HTTP 分段家族」：没有 WebSocket、没有服务端 VAD，PCM 攒够一段上传一次、
+// 结果按录音顺序拼接。两家共用的分段机器见下方 segmentedAsr* 与 startAsrRealtimeSession。
+// ---------------------------------------------------------------------------
+
+const DEEPSEEK_ASR_MAX_SECONDS = 120; // 官方单次时长上限
+const DEEPSEEK_ASR_MAX_BYTES = 8 * 1024 * 1024; // 官方单次体积上限
+
+function deepSeekAsrEndpoint(provider: AsrProvider) {
+  const base = (provider.baseUrl || "https://api.deepseek.com").trim().replace(/\/+$/, "");
+  return `${base}/v1/tools/asr`;
+}
+
+/** 从 RIFF/WAVE 头读音频时长(秒)。不像 WAV(fmt 采样率/字节率缺失)返回 null,不做猜测。 */
+function wavDurationSeconds(bytes: Buffer): number | null {
+  if (bytes.length < 44) return null;
+  if (bytes.subarray(0, 4).toString("ascii") !== "RIFF" || bytes.subarray(8, 12).toString("ascii") !== "WAVE") return null;
+  const byteRate = bytes.readUInt32LE(28);
+  if (!byteRate || !bytes.readUInt32LE(24)) return null;
+  return (bytes.length - 44) / byteRate;
+}
+
+async function requestDeepSeekTranscription(audio: Blob, provider: AsrProvider, fileName: string, audioLabel: string): Promise<string> {
+  const endpoint = deepSeekAsrEndpoint(provider);
+  const headers: Record<string, string> = { Authorization: `Bearer ${provider.apiKey}` };
+  // multipart 只带 file 一个字段——官方文档明说「传入其他字段会返回 400」。
+  const form = new FormData();
+  form.append("file", audio, fileName);
+  const started = Date.now();
+  const response = await fetchWithTimeout(endpoint, {
+    method: "POST",
+    headers,
+    body: form,
+    timeoutMs: 120_000,
+  });
+  const rawText = await response.text();
+  addLog({
+    providerId: provider.id,
+    providerName: provider.name,
+    url: endpoint,
+    ok: response.ok,
+    status: response.status,
+    kind: "provider:asr",
+    durationMs: Date.now() - started,
+    method: "POST",
+    requestHeaders: headers,
+    responseHeaders: Object.fromEntries(response.headers.entries()),
+    requestBody: `multipart /v1/tools/asr\nfile=${audioLabel}\nblob=${audio.size}B`,
+    responseBody: textBody(rawText),
+    error: response.ok ? undefined : textBody(rawText),
+  });
+  if (!response.ok) throw new Error(`DeepSeek ASR failed: ${response.status} ${rawText.slice(0, 500)}`);
+  let raw: any = {};
+  try {
+    raw = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    raw = { text: rawText };
+  }
+  // 官方整段文本在顶层 text(duration_ms/request_id 只作日志参考)。
+  return String(raw?.text ?? "").trim();
+}
+
+async function transcribeWithDeepSeekAsr(file: File, provider: AsrProvider): Promise<string> {
+  const name = (file.name || "").toLowerCase();
+  const mime = (file.type || "").toLowerCase();
+  const isWav = mime.includes("wav") || name.endsWith(".wav");
+  const isOpus = mime.includes("opus") || mime.includes("ogg") || name.endsWith(".opus") || name.endsWith(".ogg");
+  if (!isWav && !isOpus) {
+    // 官方解码器只有 16-bit PCM WAV 与 Ogg Opus,本机无转码器:明确告知而不是上传后 400。
+    throw new Error("DeepSeek 语音识别仅支持 16-bit PCM WAV 或 Ogg Opus 音频（浏览器录音的 webm、以及 mp3/m4a 需先转码）");
+  }
+  const bytes = Buffer.from(await file.arrayBuffer());
+  if (bytes.length > DEEPSEEK_ASR_MAX_BYTES) {
+    throw new Error("DeepSeek 语音识别单次音频不能超过 8 MiB——长音频请改用实时听写(自动分段)，或先切短再上传");
+  }
+  const seconds = isWav ? wavDurationSeconds(bytes) : null;
+  if (seconds !== null && seconds > DEEPSEEK_ASR_MAX_SECONDS) {
+    throw new Error(`DeepSeek 语音识别单次音频不能超过 120 秒（当前约 ${Math.round(seconds)} 秒）——请改用实时听写(自动分段)，或先切短再上传`);
+  }
+  return requestDeepSeekTranscription(
+    new Blob([bytes], { type: isWav ? "audio/wav" : "audio/ogg" }),
+    provider,
+    file.name || (isWav ? "speech.wav" : "speech.ogg"),
+    file.name || "upload",
+  );
+}
+
 function openAiAsrTranscriptionEndpoint(provider: AsrProvider) {
   try {
     const url = new URL(provider.websocketUrl || "wss://api.openai.com/v1/realtime?intent=transcription");
@@ -244,10 +351,12 @@ export async function transcribeAudioWithAsrProvider(file: File) {
   // 消费点降级(backup C4):step 等桌面端未实现的类型在存储层被原样保留(见
   // normalizeAsrProviders),这里显式拒绝并告知,绝不能落进 else 分支当 volcengine 跑。
   if (!isPcKnownAsrType(provider.type)) {
-    throw new Error(`当前桌面端尚不支持「${provider.name}」(${provider.type})语音识别——该配置来自 APP端，请改用 OpenAI / DashScope / 火山引擎 / MiMo，或在 APP端使用`);
+    throw new Error(`当前桌面端尚不支持「${provider.name}」(${provider.type})语音识别——该配置来自 APP端，请改用 OpenAI / DashScope / 火山引擎 / MiMo / DeepSeek，或在 APP端使用`);
   }
   if (!provider.apiKey.trim()) throw new Error("ASR API Key is empty");
   if (provider.type === "mimo") return transcribeWithMimo(file, provider);
+  // DeepSeek 也是 HTTP 分段家族(见上方协议注),文件转写走官方 /v1/tools/asr。
+  if (provider.type === "deepseek") return transcribeWithDeepSeekAsr(file, provider);
   const endpoint = provider.type === "openai_realtime"
     ? openAiAsrTranscriptionEndpoint(provider)
     : provider.type === "dashscope"
@@ -348,7 +457,7 @@ function asrFail(session: AsrRealtimeSession, message: string) {
   addLog({
     providerId: session.provider.id,
     providerName: session.provider.name,
-    url: session.provider.type === "mimo" ? mimoChatEndpoint(session.provider) : session.provider.websocketUrl,
+    url: isSegmentedHttpAsr(session.provider.type) ? segmentedAsrEndpoint(session.provider) : session.provider.websocketUrl,
     ok: false,
     status: 0,
     kind: "provider:asr:realtime",
@@ -531,41 +640,82 @@ function handleVolcAsrEvent(session: AsrRealtimeSession, data: ArrayBuffer) {
 }
 
 // ---------------------------------------------------------------------------
-// MiMo 伪实时:没有 WebSocket 与服务端 VAD,按 segmentDurationSec 把 PCM 攒成 WAV
-// 分段上传,结果顺序拼接后按普通 transcript 推给前端(听写模式直接可用)。
+// HTTP 分段家族(MiMo / DeepSeek)的伪实时机器:没有 WebSocket 与服务端 VAD,按
+// segmentDurationSec 把 PCM 攒成 WAV 分段上传,结果顺序拼接后按普通 transcript 推给
+// 前端(听写模式直接可用)。两家的差异只收敛在「一次分段怎么发」这一处
+// (requestSegmentedAsrSegment)与各自的字节/时长上限,其余流程完全共用。
 // ---------------------------------------------------------------------------
 
-function mimoSampleRate(provider: AsrProvider) {
+/** 「本端按 HTTP 分段跑的 ASR」判定:实时会话据此绕开 WebSocket 分支。
+ *  成员清单单源在 foundation/types 的 PC_SEGMENTED_HTTP_ASR_TYPES(前端共用)。 */
+export function isSegmentedHttpAsr(type: unknown): boolean {
+  return (PC_SEGMENTED_HTTP_ASR_TYPES as readonly string[]).includes(String(type ?? ""));
+}
+
+function segmentedAsrSampleRate(provider: AsrProvider) {
   const rate = Number(provider.sampleRate || 16000);
   return Number.isFinite(rate) && rate >= 8000 ? Math.floor(rate) : 16000;
 }
 
-/** 单段最多字节数:按时长阈值算,并压到请求体积上限以内(留出 base64 膨胀余量)。 */
-function mimoSegmentBytes(provider: AsrProvider) {
-  const seconds = Number(provider.segmentDurationSec ?? 30);
-  const byDuration = seconds > 0 ? seconds * mimoSampleRate(provider) * 2 : MIMO_MAX_AUDIO_BYTES;
-  return Math.max(3200, Math.min(Math.floor(byDuration), 6 * 1024 * 1024));
+function segmentedAsrEndpoint(provider: AsrProvider): string {
+  return provider.type === "deepseek" ? deepSeekAsrEndpoint(provider) : mimoChatEndpoint(provider);
 }
 
-async function flushMimoSegment(session: AsrRealtimeSession, force = false) {
+/** 分段上传的日志摘要(两家各自有意义的参数:MiMo 有 model/language,DeepSeek 只有官方端点)。 */
+function segmentedAsrLogLine(provider: AsrProvider): string {
+  return provider.type === "deepseek"
+    ? `deepseek segmented http (/v1/tools/asr)\nsampleRate=${segmentedAsrSampleRate(provider)}\nsegmentDurationSec=${provider.segmentDurationSec ?? 30}`
+    : `mimo segmented http\nmodel=${provider.model || "mimo-v2.5-asr"}\nsampleRate=${segmentedAsrSampleRate(provider)}\nsegmentDurationSec=${provider.segmentDurationSec ?? 30}`;
+}
+
+/** 单段最多字节数:按时长阈值算,再压进该家的硬上限(MiMo 的 base64 膨胀余量 /
+ *  DeepSeek 官方 120 秒 + 8 MiB)。导出是为了让「官方上限有没有被编码进来」可被直接断言。 */
+export function segmentedAsrSegmentBytes(provider: AsrProvider) {
+  const rate = segmentedAsrSampleRate(provider);
+  const seconds = Number(provider.segmentDurationSec ?? 30);
+  const byDuration = seconds > 0 ? seconds * rate * 2 : Number.POSITIVE_INFINITY;
+  // MiMo:body 是 base64 的 data URL,6MiB 原始字节留足膨胀余量。
+  // DeepSeek:官方单次 ≤120 秒且 ≤8 MiB——两个上限都要尊重,各留 10% 余量。阈值恒为偶数
+  // (秒 × 采样率 × 2 字节),切段不会劈开 16-bit 采样点。
+  const cap = provider.type === "deepseek"
+    ? Math.min(Math.floor(DEEPSEEK_ASR_MAX_BYTES * 0.9), Math.floor(DEEPSEEK_ASR_MAX_SECONDS * 0.9) * rate * 2)
+    : 6 * 1024 * 1024;
+  return Math.max(3200, Math.min(Math.floor(byDuration), cap));
+}
+
+/** 一次分段上传:同一段 WAV 字节,两家的报文形态不同(见各自协议注)。 */
+async function requestSegmentedAsrSegment(wav: Buffer, provider: AsrProvider): Promise<string> {
+  if (provider.type === "deepseek") {
+    return requestDeepSeekTranscription(
+      // Buffer 直接进 Blob 会被 TS 的 ArrayBufferLike 之争挡住;复制成自有 ArrayBuffer 视图。
+      new Blob([new Uint8Array(wav)], { type: "audio/wav" }),
+      provider,
+      "speech.wav",
+      `realtime segment ${wav.length}B`,
+    );
+  }
+  return requestMimoTranscription(
+    `data:audio/wav;base64,${wav.toString("base64")}`,
+    provider,
+    `realtime segment ${wav.length}B`,
+  );
+}
+
+async function flushSegmentedAsrSegment(session: AsrRealtimeSession, force = false) {
   if (session.mimoFlushing) return;
   const provider = session.provider;
-  const threshold = mimoSegmentBytes(provider);
+  const threshold = segmentedAsrSegmentBytes(provider);
   // 循环到缓冲低于阈值(或强制时清空)。上传期间新到的音频会自然进入下一轮,保证顺序。
   while (session.mimoPcm.length >= threshold || (force && session.mimoPcm.length > 0)) {
     const size = force ? session.mimoPcm.length : Math.min(session.mimoPcm.length, threshold);
     const chunk = session.mimoPcm.subarray(0, size);
     session.mimoPcm = session.mimoPcm.subarray(size);
     // 过短片段(低于 ~50ms)送上去只会被拒,直接丢弃。
-    if (chunk.length < Math.max(2, Math.floor(mimoSampleRate(provider) * 0.05) * 2)) continue;
+    if (chunk.length < Math.max(2, Math.floor(segmentedAsrSampleRate(provider) * 0.05) * 2)) continue;
     session.mimoFlushing = true;
     try {
-      const wav = pcm16MonoToWav(chunk, mimoSampleRate(provider));
-      const text = await requestMimoTranscription(
-        `data:audio/wav;base64,${wav.toString("base64")}`,
-        provider,
-        `realtime segment ${chunk.length}B`,
-      );
+      const wav = pcm16MonoToWav(chunk, segmentedAsrSampleRate(provider));
+      const text = await requestSegmentedAsrSegment(wav, provider);
       if (text) {
         session.completedTranscripts.push(text);
         session.lastText = [...session.completedTranscripts, ...session.partialTranscripts.values()].join(" ");
@@ -583,19 +733,19 @@ async function flushMimoSegment(session: AsrRealtimeSession, force = false) {
 }
 
 /** stop 后的收尾:等正在上传的分段落盘,再强制清空剩余缓冲。 */
-async function drainMimoSession(session: AsrRealtimeSession) {
+async function drainSegmentedAsrSession(session: AsrRealtimeSession) {
   while (session.mimoFlushing) await new Promise((resolve) => setTimeout(resolve, 20));
-  await flushMimoSegment(session, true);
+  await flushSegmentedAsrSegment(session, true);
   while (session.mimoFlushing) await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
 export function sendAsrAudio(session: AsrRealtimeSession, data: ArrayBuffer) {
-  if (session.provider.type === "mimo") {
+  if (isSegmentedHttpAsr(session.provider.type)) {
     if (session.mimoStopped) return;
     session.mimoPcm = Buffer.concat([session.mimoPcm, Buffer.from(data)]);
-    if (session.mimoPcm.length >= mimoSegmentBytes(session.provider)) {
+    if (session.mimoPcm.length >= segmentedAsrSegmentBytes(session.provider)) {
       // 分段上传异步进行;失败经 asrFail 推 error,不阻塞后续音频。
-      void flushMimoSegment(session);
+      void flushSegmentedAsrSegment(session);
     }
     return;
   }
@@ -654,18 +804,18 @@ export function startAsrRealtimeSession(client: any, providerId?: string) {
     mimoStopped: false,
   };
   asrRealtimeSessions.set(client, session);
-  if (provider.type === "mimo") {
+  if (isSegmentedHttpAsr(provider.type)) {
     // 与真·实时会话对齐的首帧:前端拿到 listening 后开始灌音频。
     asrSendClient(session, { type: "status", status: "listening" });
     addLog({
       providerId: provider.id,
       providerName: provider.name,
-      url: mimoChatEndpoint(provider),
+      url: segmentedAsrEndpoint(provider),
       ok: true,
       status: 0,
       kind: "provider:asr:realtime",
       durationMs: 0,
-      requestBody: `mimo segmented http\nmodel=${provider.model || "mimo-v2.5-asr"}\nsampleRate=${mimoSampleRate(provider)}\nsegmentDurationSec=${provider.segmentDurationSec ?? 30}`,
+      requestBody: segmentedAsrLogLine(provider),
     });
     return;
   }
@@ -733,22 +883,22 @@ export function startAsrRealtimeSession(client: any, providerId?: string) {
 export function stopAsrRealtimeSession(client: any) {
   const session = asrRealtimeSessions.get(client);
   if (!session) return;
-  if (session.provider.type === "mimo") {
+  if (isSegmentedHttpAsr(session.provider.type)) {
     // 前端 stop 后必须等文件段落盘再收尾——立即断开会让最后一段(往往是整句)丢失。
-    // 收尾完成后推 idle,前端据此关闭 WebSocket(见 chat-input 的 MiMo 等待逻辑)。
+    // 收尾完成后推 idle,前端据此关闭 WebSocket(见 chat-input 的 HTTP 分段等待逻辑)。
     session.mimoStopped = true;
     asrRealtimeSessions.delete(client);
-    void drainMimoSession(session).finally(() => {
+    void drainSegmentedAsrSession(session).finally(() => {
       session.finished = true;
       addLog({
         providerId: session.provider.id,
         providerName: session.provider.name,
-        url: mimoChatEndpoint(session.provider),
+        url: segmentedAsrEndpoint(session.provider),
         ok: true,
         status: 0,
         kind: "provider:asr:realtime",
         durationMs: Date.now() - session.startedAt,
-        requestBody: `mimo segmented http\nmodel=${session.provider.model || "mimo-v2.5-asr"}\nsampleRate=${mimoSampleRate(session.provider)}\nsegmentDurationSec=${session.provider.segmentDurationSec ?? 30}`,
+        requestBody: segmentedAsrLogLine(session.provider),
         responseBody: session.lastText,
       });
       asrSendClient(session, { type: "status", status: "idle" });

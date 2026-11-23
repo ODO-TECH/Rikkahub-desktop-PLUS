@@ -2,7 +2,7 @@
 // 纪律：纯搬迁自 server.ts（阶段 5.3g），行为不变。
 
 import type { Assistant, AuxiliaryTextOptions, Conversation, JsonValue, Message, MessagePart, Model } from "../foundation/types";
-import { applyPlaceholders, estimateTokens, isRecord, localeDisplayName, textFromParts, uniqueStrings } from "../foundation/utils";
+import { applyPlaceholders, estimateTokens, id, isRecord, localeDisplayName, textFromParts, uniqueStrings } from "../foundation/utils";
 import { state } from "../persistence/json-store";
 import { broadcastConversation, broadcastEngineStatus } from "../api/sse";
 import { DEFAULT_AUTO_MODEL_ID, applyCustomBody, applyRequestHeaders, findModel } from "../model-providers";
@@ -41,8 +41,22 @@ import {
 import { compressing } from "./generation-state";
 import { getConversation, persistConversation, selectedConversationMessages } from "./index";
 import { reportError } from "../observability/app-errors";
+// DeepSeek 官方 OCR(图片通道的可选主引擎):协议与就绪判定单源在 media/ocr.ts。
+import {
+  deepSeekOcrMissingKeyMessage,
+  isDeepSeekOcrConfigured,
+  isDeepSeekOcrRequested,
+  recognizeDataUrlImageWithDeepSeekOcr,
+} from "../media/ocr";
 import { findAssistant, summaryAsText } from "./helpers";
-import { findEffectiveCompaction, isPinnedMessage, mergeCompactionSummary, parseEngineCompactions } from "../inference-engine/engine-compaction";
+import type { CompactionBlock, EngineCompactionRecord } from "../inference-engine/engine-compaction";
+import {
+  compactionRecordId,
+  isPinnedMessage,
+  parseEngineCompactions,
+  planCompactionDistillation,
+  resolveCompactionBlocks,
+} from "../inference-engine/engine-compaction";
 import { agentSummaryAsText, buildAgentCompactionContext, extractAgentActivity } from "../workspace/compaction";
 import { isRuntimeEpochCurrent, runtimeEpoch } from "./runtime-epoch";
 
@@ -319,7 +333,38 @@ export function requireOcrModelId(): string {
   throw new Error("当前聊天模型不支持图片输入,且未配置 OCR 模型。请到「设置 → 模型 → 场景模型」为 OCR 指定一个支持视觉的模型");
 }
 
+/**
+ * 图片 OCR 的引擎编排(唯一入口)。三档语义,只有第一档与 DeepSeek 有关:
+ *  · 开关开 + Key 已填:先调 DeepSeek 官方 OCR;失败(格式不支持/超时/余额不足/空文本)
+ *    **自动回落**到 `ocrModelId` 视觉模型——用户拍板的可用性口径,但回落不静默:
+ *    原因进错误中心留痕,回落前的失败也照常记进请求日志。
+ *  · 开关开但 Key 没填:直接给人话错误。用户点名要的引擎不能被悄悄换掉。
+ *  · 开关关:与引入前逐字一致——只走视觉模型,未配置时抛「报错档」错误。
+ * 回落路径本身也不可用(视觉模型没配)时,把 DeepSeek 的失败原因一起说出来,
+ * 免得用户只看到「未配置 OCR 模型」而不知道真正坏的是哪一环。
+ */
 async function fetchAuxiliaryOcrText(imageUrl: string) {
+  if (!isDeepSeekOcrRequested()) return fetchVisionModelOcrText(imageUrl);
+  if (!isDeepSeekOcrConfigured()) throw new Error(deepSeekOcrMissingKeyMessage());
+  const parsed = parseDataUrl(dataUrlForMessageUrl(imageUrl));
+  if (!parsed) throw new Error("DeepSeek OCR 无法读取这张图片(拿不到可解析的图片数据)");
+  let primaryError = "";
+  try {
+    const result = await recognizeDataUrlImageWithDeepSeekOcr(parsed.mime, parsed.data, imageUrl);
+    const text = result.text.trim();
+    if (!text) throw new Error("DeepSeek OCR 没有识别出任何文字");
+    return text;
+  } catch (error) {
+    primaryError = error instanceof Error ? error.message : String(error);
+    reportError("provider", "info", "DeepSeek OCR 失败，已回落视觉模型 OCR", error, "deepseek_ocr_fallback");
+  }
+  if (!modelExists(state.settings.ocrModelId)) {
+    throw new Error(`${primaryError}（且未配置可回落的 OCR 模型:请到「设置 → 模型 → 场景模型」为 OCR 指定一个支持视觉的模型)`);
+  }
+  return fetchVisionModelOcrText(imageUrl);
+}
+
+async function fetchVisionModelOcrText(imageUrl: string) {
   const ocrModelId = requireOcrModelId();
   const picked = findModel(ocrModelId);
   const providerItem = picked.provider;
@@ -503,9 +548,12 @@ export function markCompactionBoundary(conversation: Conversation): void {
 /** 聊天引擎压缩切点标记(非破坏性):画在"切点前一条消息"下方,标出模型记忆边界——
  *  切点及之后逐字可见,之前只剩摘要。时间线原文一条不删,与工作区 pi 的切点语义一致;
  *  区别只在锚点归属(pi 的切点记录由引擎捕获,聊天引擎由 compressConversation 落库)。
- *  只保留最新一条:再次压缩后旧线指向的边界已被新摘要覆盖,留着会误导。切点是首条
- *  消息时无前驱可锚(线无处可画),不打标记。 */
-export function markCompactionCut(conversation: Conversation, cutMessageId: string): void {
+ *  切点是首条消息时无前驱可锚(线无处可画),不打标记。
+ *
+ *  S5 块化:一次压缩后可能并列多个生效块,每个块边界都是一条真实的记忆边界,所以
+ *  标记**全部**生效切点而不是只留最新一条(v1 单块时两者逐字节一致)。先清掉所有旧
+ *  标记再按传入集合重打——被上层块吸收/停用的块不再画线,幂等且不会累积脏标记。 */
+export function markCompactionCuts(conversation: Conversation, cutMessageIds: string[]): void {
   for (const node of conversation.messages) {
     for (const msg of node.messages) {
       if (!Array.isArray(msg.annotations)) continue;
@@ -513,13 +561,22 @@ export function markCompactionCut(conversation: Conversation, cutMessageId: stri
       if (kept.length !== msg.annotations.length) msg.annotations = kept;
     }
   }
-  const cutIndex = conversation.messages.findIndex((node) => node.messages.some((msg) => msg.id === cutMessageId));
-  if (cutIndex <= 0) return;
-  const previous = conversation.messages[cutIndex - 1];
-  const anchor = previous.messages[previous.selectIndex] ?? previous.messages[0];
-  if (!anchor) return;
-  anchor.annotations ??= [];
-  anchor.annotations.push({ type: "compaction_cut" });
+  const wanted = new Set(cutMessageIds);
+  for (let cutIndex = 1; cutIndex < conversation.messages.length; cutIndex += 1) {
+    const node = conversation.messages[cutIndex]!;
+    if (!node.messages.some((msg) => wanted.has(msg.id))) continue;
+    const previous = conversation.messages[cutIndex - 1]!;
+    const anchor = previous.messages[previous.selectIndex] ?? previous.messages[0];
+    if (!anchor) continue;
+    anchor.annotations ??= [];
+    if (anchor.annotations.some((item) => isRecord(item) && item.type === "compaction_cut")) continue;
+    anchor.annotations.push({ type: "compaction_cut" });
+  }
+}
+
+/** 单切点兼容入口(pi 捕获路径与旧调用方)。 */
+export function markCompactionCut(conversation: Conversation, cutMessageId: string): void {
+  markCompactionCuts(conversation, [cutMessageId]);
 }
 
 /** 链式摘要预算:目标长度的 2 倍(默认 2000 → 4000),下限 1k 保护极小目标。
@@ -549,15 +606,15 @@ export async function compressConversation(conversation: Conversation, additiona
   const messagesRefBefore = conversation.messages;
   const messagesLengthBefore = conversation.messages.length;
 
-  // 链式压缩(非破坏性改造的核心):上一次切点之后才是"还没被摘要的原文"。
+  // 块化压缩(非破坏性改造的核心 + S5):上一次生效块的切点之后才是"还没被摘要的原文"。
   // ① 绝不把已被摘要吸收的原文再压一遍——那会让摘要重复膨胀,且第二次压缩的成本
   //    随会话总长度增长(压缩本该只花在新增段上);
-  // ② 新摘要 = 上一次摘要 + 本次摘要,因为生效记录只有最新一条(见 engine-compaction),
-  //    不链式拼接就会在第二次压缩时把早期上下文整段丢掉。
+  // ② S5 起新摘要**不再链式拼接**上一份:每个块只覆盖自己那段原文,多个块并列生效
+  //    (resolveCompactionBlocks),早期摘要行逐字节不变 → 出站前缀稳定、前缀缓存命中。
+  //    体量控制交给 S6 分层蒸馏,而不是把全部历史摘要重写一遍。
   const recordsBefore = parseEngineCompactions(conversation.engineCompactions);
-  const previousCut = findEffectiveCompaction(recordsBefore, allMessages, () => true);
-  const previousCutIndex = previousCut ? allMessages.findIndex((msg) => msg.id === previousCut.cutMessageId) : 0;
-  const previousSummary = previousCut?.summary.trim() ?? "";
+  const blocksBefore = resolveCompactionBlocks(recordsBefore, allMessages, () => true);
+  const previousCutIndex = blocksBefore.at(-1)?.cutIndex ?? 0;
   const compressible = allMessages.slice(Math.max(0, previousCutIndex));
   // 切点必须落在一条真实消息上:全量压缩没有锚点可指,模型也会丢掉"当前对话最后一句"
   // 的语境。只剩一条时确实没得压,明确拒绝而不是产生一个空压缩。
@@ -654,14 +711,38 @@ export async function compressConversation(conversation: Conversation, additiona
   // FTS 重建后搜不到历史——这是本次改造要消除的静默数据损失。
   const freshSummary = summaries.map((summary) => summary.trim()).filter(Boolean).join("\n\n");
   if (!freshSummary) throw new Error("压缩未产生有效摘要");
-  // 链式拼接见上方 ②:只有最新记录生效,不带上一次摘要就会在第二次压缩时丢掉早期上下文。
-  // 摘要模型复述上一版时合并层会去掉重复段落,避免记录里堆出同一段文字。
-  let chainedSummary = mergeCompactionSummary(previousSummary, freshSummary);
 
-  // 摘要长度预算:链式摘要超过目标 2 倍时再浓缩一遍。不设这一步,每次压缩都会把
-  // 上一份摘要原样背进新记录,长期会话的摘要会线性膨胀、最终重新挤占上下文。
-  // 二次浓缩失败不毁掉已完成的主压缩;取消必须向上传播(否则会带着过期结果落库)。
-  if (estimateTokens(chainedSummary) > compactionSummaryBudget(targetTokens)) {
+  // S5:新块只覆盖本次新增段 [previousCutIndex, newCutIndex),摘要**不再链式拼接**。
+  // 早期块的摘要行逐字节不变,追加新块不改写任何旧行 → 出站请求前缀稳定。
+  const newCutIndex = allMessages.findIndex((msg) => msg.id === cutMessageId);
+  const createdAt = new Date().toISOString();
+  const newRecord: EngineCompactionRecord = {
+    id: id(),
+    startMessageId: allMessages[previousCutIndex]?.id ?? cutMessageId,
+    cutMessageId,
+    summary: freshSummary,
+    // 展示口径:本次新摘要覆盖的原文 token(不含旧块,避免第二次压缩后数值虚高)。
+    tokensBefore: summarizedTokens,
+    tier: 1,
+    active: true,
+    createdAt,
+  };
+  const recordsAfter: EngineCompactionRecord[] = [...recordsBefore, newRecord];
+  // 候选块 = 已生效块 + 本次新块。连续性天然成立:新块起点恰为上一块切点。
+  const candidateBlocks: CompactionBlock[] = [
+    ...blocksBefore,
+    { record: newRecord, startIndex: previousCutIndex, cutIndex: newCutIndex, tier: 1 },
+  ];
+
+  // S6 分层再蒸馏:活跃块摘要总量超预算时,把**最旧的若干块摘要**合成一个上层块。
+  // 与 v1"整份链式摘要再浓缩一遍"的两点根本差别:
+  // ① 输入只是被吸收的那几块,成本不随会话总长度增长;
+  // ② 输入永远是下层块摘要,不是自己上一代的输出 —— 原文一生只在 tier-1 折一次,
+  //    信息衰减只随层数(上限 3)发生,不随压缩次数按 ρ^k 累积。
+  // 被吸收的块置 active=false:记录与原文都保留,consumedRecordIds 留下可回溯血统。
+  // 蒸馏失败不毁掉已完成的主压缩;取消必须向上传播(否则会带着过期结果落库)。
+  const distillation = planCompactionDistillation(candidateBlocks, compactionSummaryBudget(targetTokens));
+  if (distillation) {
     // 不带 progress:这是分块计划之外的一步,给 total+1 会让进度条从 100% 倒退。
     // 去掉进度后状态条显示"正在压缩上下文",计时继续走,语义准确。
     broadcastEngineStatus(conversation.id, {
@@ -674,7 +755,7 @@ export async function compressConversation(conversation: Conversation, additiona
       const condensed = cleanAuxiliaryText(await fetchAuxiliaryText(
         compressionModelId,
         applyPlaceholders(DEFAULT_CONDENSE_SUMMARY_PROMPT, {
-          content: chainedSummary,
+          content: distillation.inputSummary,
           target_tokens: String(targetTokens),
           additional_context: additionalPrompt.trim()
             ? `Additional instructions from user: ${additionalPrompt.trim()}`
@@ -684,15 +765,30 @@ export async function compressConversation(conversation: Conversation, additiona
         "compression",
         { stream: true, signal, conversationId: conversation.id },
       )).trim();
-      // 只在真的变短时采纳:模型复述/扩写时保留原摘要,不制造"二次压缩反而膨胀"。
-      if (condensed && estimateTokens(condensed) < estimateTokens(chainedSummary)) {
-        chainedSummary = condensed;
+      // 只在真的变短时采纳:模型复述/扩写时保留原块集,不制造"蒸馏反而膨胀"。
+      if (condensed && estimateTokens(condensed) < distillation.inputTokens) {
+        const consumedIds = distillation.consumed.map((block) => compactionRecordId(block.record));
+        const consumedSet = new Set(consumedIds);
+        for (const record of recordsAfter) {
+          if (consumedSet.has(compactionRecordId(record))) record.active = false;
+        }
+        recordsAfter.push({
+          id: id(),
+          startMessageId: allMessages[distillation.startIndex]?.id ?? distillation.cutMessageId,
+          cutMessageId: distillation.cutMessageId,
+          summary: condensed,
+          tokensBefore: distillation.tokensBefore,
+          tier: distillation.tier,
+          consumedRecordIds: consumedIds,
+          active: true,
+          createdAt,
+        });
       }
     } catch (error) {
       if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
         throw new DOMException("Compression cancelled", "AbortError");
       }
-      // 二次浓缩是增强不是主流程:失败时保留链式摘要(可能超预算,但信息完整)。
+      // 分层蒸馏是增强不是主流程:失败时保留原块集(可能超预算,但信息完整)。
     }
   }
 
@@ -707,17 +803,12 @@ export async function compressConversation(conversation: Conversation, additiona
     throw new Error("会话在压缩期间发生变更,压缩结果作废,请重试");
   }
 
-  conversation.engineCompactions = [
-    ...recordsBefore,
-    {
-      cutMessageId,
-      summary: chainedSummary,
-      // 展示口径:本次新摘要覆盖的原文 token(不含旧摘要,避免第二次压缩后数值虚高)。
-      tokensBefore: summarizedTokens,
-      createdAt: new Date().toISOString(),
-    },
-  ] as unknown as JsonValue[];
-  markCompactionCut(conversation, cutMessageId);
+  conversation.engineCompactions = recordsAfter as unknown as JsonValue[];
+  // S5:标记**全部生效块**的切点(被上层块吸收的块不再画线)。单块时与 v1 一致。
+  markCompactionCuts(
+    conversation,
+    resolveCompactionBlocks(recordsAfter, allMessages, () => true).map((block) => block.record.cutMessageId),
+  );
   conversation.chatSuggestions = [];
   conversation.updateAt = Date.now();
   persistConversation(conversation);

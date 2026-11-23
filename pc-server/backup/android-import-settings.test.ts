@@ -107,6 +107,10 @@ function pcSentinelSettings(): Settings {
   settings.shellPath = "C:\\pc-tools\\bash.exe";
   settings.chatAutoCompact = true;
   settings.titleGenerationEnabled = false;
+  // DeepSeek 官方 OCR(PC-only 三键):开关与用途是「APP 无视、跨端保留」,Key 是凭据、必须剥。
+  settings.deepseekOcrEnabled = true;
+  settings.deepseekOcrApiKey = "pc-deepseek-ocr-key";
+  settings.deepseekOcrPurpose = "rich_layout_recognition";
   settings.promptOptimizeModelId = "pc-prompt-optimize-model";
   settings.promptOptimizePrompt = "PC 专属提示词优化指令 <!-- sentinel -->";
   settings.embeddingModelId = "pc-embedding-model";
@@ -144,6 +148,7 @@ function pcSentinelSettings(): Settings {
     stallRepeatLimit: 4,
     sameErrorLimit: 4,
     requireVerifiedCompletion: false,
+    roundBudgetTokens: 12_000,
     schedulingEnabled: false,
   };
   settings.sshDevices = [{
@@ -328,6 +333,7 @@ describe("安卓导入的 PC-only 保留清单", () => {
       "proxyConfig", "preferredPort", "sandboxRestricted", "sandboxExtraWritableDirs", "subagent", "workspaceTools",
       "agentLoop", "keybindings",
       "webPasswordHash", "sshDevices", "imAccess", "shellPath",
+      "deepseekOcrApiKey",
       "exportKelivoBackup", "kelivoSyncOptions", "backupScope", "backupAllData",
     ]) {
       expect(key in exported, `安卓导出未剥离敏感/机器级字段 "${key}"`).toBe(false);
@@ -338,6 +344,10 @@ describe("安卓导入的 PC-only 保留清单", () => {
     }
     // 非敏感、APP 靠 ignoreUnknownKeys 无视的 PC 独占键保留跨端往返(与既有契约一致)。
     expect(exported.chatAutoCompact).toBe(true);
+    // DeepSeek OCR 的开关与用途同属这一档:手机侧无视,回到 PC 还在;Key 已在上面剥离。
+    expect(exported.deepseekOcrEnabled).toBe(true);
+    expect(exported.deepseekOcrPurpose).toBe("rich_layout_recognition");
+    expect(JSON.stringify(exported)).not.toContain("pc-deepseek-ocr-key");
     expect(exported.embeddingModelId).toBe("pc-embedding-model");
     expect(exported.memorySettings).toEqual({
       globalEnabled: false,

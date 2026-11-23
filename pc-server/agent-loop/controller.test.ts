@@ -91,6 +91,24 @@ let callSeq = 0;function obs(
   };
 }
 
+test("missing-evidence repair reuses successful call IDs and still requires the evidence field", () => {
+  let plan = v2Plan([{id:"s1",status:"completed"}]);
+  const controller = new AgentLoopController(config(), {readPlan:()=>plan});
+  const success = obs("app_control", {action:"api"}, "saved");
+  const failure = obs("bad_tool", {}, "", "failed");
+  controller.evaluateToolRound([success, failure, obs("update_plan", {}, "recorded")]);
+  const repair = controller.evaluateFinal();
+  expect(repair.action).toBe("inject");
+  if (repair.action !== "inject") throw new Error("Expected repair instructions");
+  expect(repair.text).toContain('"evidence":["actual_tool_call_id"]');
+  expect(repair.text).toContain(success.toolCallId);
+  expect(repair.text).not.toContain(failure.toolCallId);
+  expect(repair.text).toContain("verify field");
+  expect(repair.text).toContain("instead of rerunning");
+  plan = v2Plan([{id:"s1",status:"completed",evidence:[success.toolCallId]}]);
+  expect(controller.evaluateFinal()).toEqual({action:"continue"});
+});
+
 function harness(
   initialPlan: Plan | null,
   overrides: Partial<AgentLoopControllerConfig> = {},
@@ -110,6 +128,59 @@ function harness(
   };
   return { controller: new AgentLoopController(config(overrides), deps), state };
 }
+
+describe("S-F5 单轮体积预算刹车", () => {
+  const round = (rawTokensEst: number) => ({
+    round: 1,
+    calls: 3,
+    nestedCalls: 1,
+    okCalls: 3,
+    resultBytesRaw: rawTokensEst * 4,
+    resultBytesClipped: rawTokensEst,
+    rawTokensEst,
+    savedTokensEst: 0,
+  });
+
+  test("默认 0 = 关:超多 token 也不干预", () => {
+    const { controller } = harness(null);
+    expect(controller.evaluateToolRound([], round(999_999))).toEqual({ action: "continue" });
+  });
+
+  test("超预算先注入一次收口提示,连续两轮超限 → awaiting_user", () => {
+    const { controller, state } = harness(null, { roundBudgetTokens: 1000 });
+    const first = controller.evaluateToolRound([], round(2000));
+    expect(first.action).toBe("inject");
+    if (first.action === "inject") {
+      expect(first.text).toContain("Output budget");
+      expect(first.text).toContain("~2000 tokens");
+    }
+    const second = controller.evaluateToolRound([], round(2000));
+    expect(second.action).toBe("halt");
+    if (second.action === "halt") {
+      expect(second.status).toBe("awaiting_user");
+      expect(second.reason).toContain("连续两轮");
+    }
+    expect(state.stalls.at(-1)?.kind).toBe("budget");
+  });
+
+  test("降到预算内即清零:再超限只回到提示,不直接停", () => {
+    const { controller } = harness(null, { roundBudgetTokens: 1000 });
+    expect(controller.evaluateToolRound([], round(2000)).action).toBe("inject");
+    expect(controller.evaluateToolRound([], round(500))).toEqual({ action: "continue" });
+    const again = controller.evaluateToolRound([], round(2000));
+    expect(again.action).toBe("inject");
+  });
+
+  test("硬停滞优先:同参同输出三次 → stalled 而不是预算提示", () => {
+    const { controller } = harness(null, { roundBudgetTokens: 1000 });
+    const same = obs("read", { path: "a" }, "content");
+    controller.evaluateToolRound([same], round(10));
+    controller.evaluateToolRound([same], round(10));
+    const third = controller.evaluateToolRound([same], round(2000));
+    expect(third.action).toBe("halt");
+    if (third.action === "halt") expect(third.status).toBe("stalled");
+  });
+});
 
 describe("判定表 — 连续重复同参同输出(规则 3)", () => {
   test("前两次继续(第二次先提示换路径),第三次 halted=stalled", () => {

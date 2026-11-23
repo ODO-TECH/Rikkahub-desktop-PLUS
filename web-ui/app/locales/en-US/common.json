@@ -58,6 +58,7 @@
     "theme_deleted": "Theme deleted",
     "welcome_back": "Welcome back",
     "new_conversation": "New conversation",
+    "new_chat_conversation": "New chat-only conversation",
     "conversations": "Conversations",
     "loading": "Loading...",
     "no_conversations": "No conversations yet",
@@ -102,12 +103,17 @@
     "empty_content": "(empty)",
     "type_label": "Type: {{type}}",
     "type_labels": {
-      "conversation_files": "Conversation files",
+      "conversation_files": "Files · Runs",
       "workspace_files": "Workspace files",
       "code_preview": "Code preview",
       "media_studio": "Media generation",
       "ssh_terminal": "SSH terminal",
       "plan": "Plan"
+    },
+    "views": {
+      "aria": "Conversation panel views",
+      "files": "Files",
+      "activity": "Runs"
     },
     "close_panel": "Close panel",
     "toggle_open": "Open files sidebar",
@@ -115,8 +121,8 @@
     "resize": "Resize files sidebar",
     "plan": {
       "title": "Plan",
-      "toggle_open": "Open plan panel",
-      "toggle_close": "Close plan panel",
+      "toggle_open": "Show plan",
+      "toggle_close": "Hide plan",
       "untitled": "Untitled plan",
       "empty": "No plan in this conversation yet. Turn on Settings › Experiments › Plan panel and the assistant will write one before starting multi-step work.",
       "progress": "{{done}}/{{total}} done",

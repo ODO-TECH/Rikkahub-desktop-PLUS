@@ -9,7 +9,8 @@
 //      system/工具/摘要,是最接近上游视野的数(与前端提示条同口径)。该 usage 必须
 //      晚于当前生效压缩记录,否则它反映的是压缩前的窗口(刚压完会误触发第二次)。
 //   ② 无可用 usage(首轮/压缩后的第一轮/记录缺 createdAt):把模型真实要吃的富化产物
-//      完整编码一遍再数 token——含 system、摘要、注入与工具往返。这一步会先做记忆
+//      完整编码一遍再数 token——含 system、摘要、注入与工具往返,再加上工具声明 JSON
+//      (它不在消息序列里,数消息数不到;挂满 MCP 时可达上万 token)。这一步会先做记忆
 //      召回(prepareMemoryRecall),与正式生成同一时机,避免冻结出未召回的旧上下文档。
 //
 // 失败策略:best-effort。压缩模型调用失败时记一条 warn 级错误后继续生成——自动维护
@@ -17,9 +18,9 @@
 // 唯一硬语义是取消:signal 中止(用户停止/新消息接管)时立即放弃,不落任何记录。
 
 import type { Assistant, Conversation, Message, Model, Provider } from "../foundation/types";
-import { estimateTokens, isRecord, textFromParts } from "../foundation/utils";
+import { isRecord } from "../foundation/utils";
 import { broadcastEngineStatus, broadcastList } from "../api/sse";
-import { contextWindowFor } from "../model-providers/model-limits";
+import { contextWindowFor, outputLimitFor } from "../model-providers/model-limits";
 import { modelsDevCache } from "../inference-engine/providers";
 import {
   findEffectiveCompaction,
@@ -28,7 +29,8 @@ import {
   shouldAutoCompact,
 } from "../inference-engine/engine-compaction";
 import { isEmptyAssistantPlaceholder } from "../inference-engine/parts";
-import { conversationTransformedMessages } from "../inference-engine/conversation-encoding";
+import { conversationTransformedMessages, contextCalibrationFactor, toolDeclarationTokens } from "../inference-engine/conversation-encoding";
+import { calibrationFactorFor } from "../inference-engine/token-calibration";
 import { prepareMemoryRecall } from "../memory/recall";
 import { prepareDynamicRecall } from "../memory/dynamic-recall";
 import { reportError } from "../observability/app-errors";
@@ -36,7 +38,7 @@ import { state } from "../persistence/json-store";
 import { selectedConversationMessages } from "./index";
 import { compressing } from "./generation-state";
 import { isRuntimeEpochCurrent, runtimeEpoch } from "./runtime-epoch";
-import { toolPartsTextVolume } from "./helpers";
+import { contextTokensOf } from "../inference-engine/context-budget";
 import { compressConversation } from "./auxiliary";
 import { scheduleCompactionCandidates } from "../memory/experiment/compaction-candidates";
 
@@ -47,11 +49,10 @@ const AUTO_COMPACT_KEEP_MAX = 32;
 const AUTO_COMPACT_KEEP_MIN = 4;
 const AUTO_COMPACT_TARGET_TOKENS = 2000;
 
-/** 单条消息在模型视野里的近似 token(正文 + 工具输入/输出)。 */
+/** 单条消息在模型视野里的近似 token(正文 + 工具输入/输出)。估算单源在
+ *  inference-engine/context-budget.ts,自动压缩与预算窗口共用同一口径。 */
 function messageContextTokens(msg: Message): number {
-  const text = textFromParts(msg.parts);
-  const tool = toolPartsTextVolume(msg.parts);
-  return (text ? estimateTokens(text) : 0) + (tool ? estimateTokens(tool) : 0);
+  return contextTokensOf(msg);
 }
 
 /** 切点之后的可见消息(与编码层同一切点判定;切点失效时退回全量)。 */
@@ -94,16 +95,23 @@ export async function estimateAutoCompactContext(
     if (!Number.isFinite(promptTokens) || promptTokens <= 0) continue;
     if (usageOlderThanCompaction(compaction, msg)) continue;
     const completionTokens = Number(usage?.completionTokens ?? 0);
+    // usage 是上游真实数,不乘校准;只有"这条之后新追加的消息"是本地估算,需要乘 k̂。
+    const factor = contextCalibrationFactor(assistant);
     let trailing = 0;
     for (let i = index + 1; i < visible.length; i += 1) trailing += messageContextTokens(visible[i]!);
-    return promptTokens + (Number.isFinite(completionTokens) ? completionTokens : 0) + trailing;
+    return promptTokens + (Number.isFinite(completionTokens) ? completionTokens : 0) + Math.round(trailing * factor);
   }
   // 无可用 usage:按模型真实视野完整估算。召回先就位,避免冻结未召回的上下文块;
   // S9 易变块同一次请求就会带上,估算必须把它算进去,否则压完仍可能超阈值。
   await prepareMemoryRecall(conversation, assistant);
   await prepareDynamicRecall(conversation, assistant);
-  const { messages: encoded } = conversationTransformedMessages(conversation, assistant, { dynamicRecall: true });
-  return encoded.reduce((sum, msg) => sum + messageContextTokens(msg), 0);
+  const { messages: encoded, picked } = conversationTransformedMessages(conversation, assistant, { dynamicRecall: true });
+  // 工具声明不在消息序列里,必须单独加(usage 优先分支的 promptTokens 已含它)。
+  // 整段都是本地估算 → 乘 k̂(S2 用量自校准;无样本时为 1,与引入前一致)。
+  const local = encoded.reduce((sum, msg) => sum + messageContextTokens(msg), 0)
+    + toolDeclarationTokens(assistant, picked.model, conversation.id);
+  // provider 可能为空(findModel 在零供应商配置时回退 Auto):无键即无样本,k̂=1。
+  return Math.round(local * calibrationFactorFor(picked.provider?.id ?? "", picked.model.modelId));
 }
 
 function keepRecentFor(compressibleCount: number): number {
@@ -133,7 +141,9 @@ export async function maybeAutoCompactChat(input: {
   const contextTokens = await estimateAutoCompactContext(conversation, assistant);
   if (signal?.aborted) return false;
   if (!isRuntimeEpochCurrent(epoch)) return false;
-  if (!shouldAutoCompact(contextTokens, contextWindow)) return false;
+  // S3:预留跟着模型真实输出上限走(未知则按窗口 1/4),不再写死 16384——小窗口模型
+  // 从此有自动压缩,大窗口模型的预留也够吸收估算误差。
+  if (!shouldAutoCompact(contextTokens, contextWindow, outputLimitFor(modelsDevCache, provider, model.modelId))) return false;
 
   // 可压缩段:上一次切点之后。少于两条说明没有可摘的原文(压缩会拒绝),静默跳过。
   const allMessages = selectedConversationMessages(conversation);
@@ -197,4 +207,46 @@ export async function maybeAutoCompactChat(input: {
       broadcastList();
     }
   }
+}
+
+/** 按「本轮实际要编码的富化产物」估算 token(含 system/摘要/注入,预算窗口已生效)。
+ *  与 usage 优先口径分开:导入会话里存的是来源 APP 的旧 usage,不能当作本轮请求体积。 */
+export async function estimateEncodedContext(conversation: Conversation, assistant: Assistant): Promise<number> {
+  await prepareMemoryRecall(conversation, assistant);
+  await prepareDynamicRecall(conversation, assistant);
+  const { messages: encoded, picked } = conversationTransformedMessages(conversation, assistant, { dynamicRecall: true });
+  const local = encoded.reduce((sum, msg) => sum + messageContextTokens(msg), 0)
+    + toolDeclarationTokens(assistant, picked.model, conversation.id);
+  return Math.round(local * calibrationFactorFor(picked.provider?.id ?? "", picked.model.modelId));
+}
+
+/** 硬闸判定(纯函数,供测试):未超原生窗口返回 null,超了返回可操作错误文案。
+ *  S4:判定口径是**原生窗口**,不是 window − reserve。预留是给输出留的头,由
+ *  reserveTokensFor/planOutputCap 在请求参数层面执行;硬闸只回答"这个请求上游会不会
+ *  直接拒"。拿预留当硬线会把估算偏大、本可成功的请求误杀(估算误差可达 ±20%)。 */
+export function contextFitError(usedTokens: number, contextWindow: number | null): string | null {
+  if (contextWindow == null) return null; // 窗口未知不猜
+  if (usedTokens <= contextWindow) return null;
+  return `上下文约 ${Math.round(usedTokens / 1000)}K tokens,已超过模型窗口上限(${Math.round(contextWindow / 1000)}K):` +
+    `请对本次会话做一次手动压缩,或换用更大窗口的模型后再发送。`;
+}
+
+/** 发送前硬闸(**常开**,S4)。在任何网络调用之前判定:估算上下文 > 模型原生窗口 →
+ *  直接拒绝本次生成,不发出请求。这是「防 400」的最后一道,不是压缩的替代:
+ *  - 常开:出厂设置(预算关、自动压缩关)下也必须生效,否则等于没有任何护栏;
+ *  - 窗口未知时不猜(与 maybeAutoCompactChat 同口径);
+ *  - 判定放在应急截断之后(enrichMessages 已截过一轮),截完仍超才报错。 */
+export async function assertContextFits(input: {
+  conversation: Conversation;
+  assistant: Assistant;
+  provider: Provider;
+  model: Model;
+}): Promise<void> {
+  const contextWindow = contextWindowFor(modelsDevCache, input.provider, input.model.modelId);
+  if (contextWindow == null) return;
+  // 必须按本轮编码产物估:导入会话的 usage 来自来源 APP(全量注入时代),用它会把
+  // 已经过预算裁剪的请求误判为超限,形成「开了预算仍发不出去」的死锁。
+  const contextTokens = await estimateEncodedContext(input.conversation, input.assistant);
+  const message = contextFitError(contextTokens, contextWindow);
+  if (message) throw new Error(message);
 }

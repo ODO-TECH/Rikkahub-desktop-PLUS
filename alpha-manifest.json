@@ -1,0 +1,11 @@
+{
+  "version": "0.2.0",
+  "kernel": "agent-kernel/src",
+  "desktopAdapter": "pc-server/kernel-engine",
+  "defaultExecutionMode": "agent",
+  "piCheckoutRequired": false,
+  "oauthSnapshot": "vendor/pi-auth",
+  "conversationKind": "persistent agent/chat",
+  "executionMode": "persistent from the next turn until switched; default agent; immutable during a run; pure-chat conversations cannot switch",
+  "note": "Source tree for RikkaHub Desktop PLUS 0.2.0."
+}

@@ -64,6 +64,8 @@
       "title": "Compaction record",
       "description": "Messages before the cut stay in the local conversation; they are simply no longer sent to the model.",
       "compressed_at": "Compacted {{time}}",
+      "block_line": "Segment {{index}}/{{total}} · tier {{tier}}",
+      "distilled_from": "distilled from {{count}} block summaries",
       "tokens_before": "Source text",
       "summary_tokens": "Current summary",
       "summary_delta": "Summary change",
@@ -85,7 +87,9 @@
       "expand": "Show originals",
       "collapse": "Fold originals",
       "note": "Originals stay in the local conversation; they are no longer sent to the model",
-      "detail": "Details"
+      "detail": "Details",
+      "segment": "Segment {{index}}/{{total}}",
+      "tier": "Tier {{tier}}"
     },
     "compress": {
       "busy": "A compression is already in progress, please wait",
@@ -201,6 +205,8 @@
         "run_started": "Run started ({{engine}})",
         "run_resumed": "Resumed after approval",
         "round": "Round {{round}}",
+        "round_summary": "Round {{round}} · {{calls}} calls · {{raw}} → {{clipped}}{{saved}}",
+        "round_summary_saved": " · ~{{tokens}} tokens saved",
         "tool_call": "Called {{tool}}",
         "tool_execution": "Executed {{tool}}",
         "tool_result": "Finished {{tool}}",

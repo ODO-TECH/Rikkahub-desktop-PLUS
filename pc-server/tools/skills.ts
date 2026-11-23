@@ -32,12 +32,16 @@ export function parseSkillFrontmatter(content: string) {
   const match = content.slice(3).match(/\r?\n---(?:\r?\n|$)/);
   if (!match || match.index === undefined) return result;
   const yaml = content.slice(3, 3 + match.index).trim();
+  let multiline: string | null = null;
   for (const line of yaml.split(/\r?\n/)) {
+    if(multiline && /^\s+/.test(line)) {result[multiline]+=(result[multiline]?" ":"")+line.trim();continue;}
+    multiline=null;
     const colon = line.indexOf(":");
     if (colon <= 0) continue;
     const key = line.slice(0, colon).trim();
     const value = line.slice(colon + 1).trim().replace(/^"|"$/g, "");
-    if (key && value) result[key] = value;
+    if(key && /^[|>][-+]?$/.test(value)){result[key]="";multiline=key;}
+    else if (key && value) result[key] = value;
   }
   return result;
 }
@@ -57,7 +61,7 @@ export function skillMetadataFromFile(skillName: string): SkillMetadata | null {
   // P4 对齐 pi(skills.ts loadSkillFromFile):name 缺省回退目录名——否则 pi 能加载的
   // 技能在我们列表里不可见,enabledSkills 白名单永远勾不上;description 缺失与 pi
   // 同为硬性不加载(诊断面见 listSkillsWithDiagnostics)。
-  const name = frontmatter.name?.trim() || skillName;
+  const name = skillName;
   const description = frontmatter.description?.trim();
   if (!description) return null;
   return {

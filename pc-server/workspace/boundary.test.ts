@@ -8,6 +8,7 @@ import { join, parse, resolve } from "node:path";
 
 import {
   assertInsideWorkspace,
+  assertWideWritablePath,
   createBoundedEditOperations,
   createBoundedWriteOperations,
   createWideReadOperations,
@@ -122,13 +123,11 @@ describe("宽界 Operations(read 三档全宽;write 区内直通+黑名单)", ()
     const dataTarget = join(dataDir, "workspaces", "wide-test", "appdata-ok.txt");
     await wideOps.writeFile(dataTarget, "x");
     expect(readFileSync(dataTarget, "utf8")).toBe("x");
-    // 系统目录:同样不再硬拒。用指向系统目录黑名单内、但重定向到测试临时区的安全路径验证
-    // (仅证明黑名单不再拦截;不真正写 C:\Windows / /etc)。
+    // Verify policy separately from OS access rights; no write to the real system directory.
     const sysTarget = process.platform === "win32"
       ? join(process.env.SystemRoot ?? String.raw`C:\Windows`, "Temp", "rkh-wide-ok.txt")
       : "/tmp/rkh-wide-ok.txt";
-    await wideOps.writeFile(sysTarget, "x");
-    expect(readFileSync(sysTarget, "utf8")).toBe("x");
+    expect(() => assertWideWritablePath(sysTarget, wsRoot)).not.toThrow();
   });
 });
 

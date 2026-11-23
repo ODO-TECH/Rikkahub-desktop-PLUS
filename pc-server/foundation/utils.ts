@@ -72,10 +72,18 @@ export function localeDisplayName() {
   }
 }
 
+/** 按 1 token/字 计的 CJK 字符集。原先只覆盖 U+3400–9FFF 且按 0.9 计,漏掉假名、
+ *  谚文、CJK 标点与兼容表意文字——这些在真实分词器里同样接近 1 token/字。
+ *  参照 billion-context kernel/src/tokenize.ts 的口径(它按 1.0 计仍自述低估约 5%),
+ *  0.9 会让我们在中日韩混排场景系统性少算,自动压缩因此触发过晚。
+ *  用 replace 差值计数而不是 match():后者为每个命中字符分配一个字符串,长文本上是
+ *  数量级更差的内存开销。所有区间都在 BMP 内,差值即字符数。 */
+const CJK_TOKEN_CHARS = /[㐀-鿿豈-﫿぀-ヿ가-힯　-〿]/g;
+
 export function estimateTokens(text: string) {
-  const cjk = (text.match(/[㐀-鿿]/g) ?? []).length;
+  const cjk = text.length - text.replace(CJK_TOKEN_CHARS, "").length;
   const other = Math.max(0, text.length - cjk);
-  return Math.max(1, Math.ceil(cjk * 0.9 + other / 4));
+  return Math.max(1, Math.ceil(cjk + other / 4));
 }
 
 export function dateKey(timestamp: number | string) {

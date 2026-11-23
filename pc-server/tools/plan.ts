@@ -502,6 +502,8 @@ export interface PlanMergeOptions {
   taskGraph?: boolean;
   /** 依赖"完成"是否必须带证据;与 agentLoop.requireVerifiedCompletion 同口径。 */
   requireVerified?: boolean;
+  /** Successful calls from the selected conversation, supplied by the host. */
+  availableEvidence?: Array<{ toolCallId: string; toolName: string }>;
 }
 
 export interface PlanMergeResult {
@@ -740,6 +742,7 @@ export function planReceipt(plan: Plan, warnings: string[] = []) {
   const v2 = isPlanV2(plan);
   const v3 = isPlanV3(plan);
   const analysis = v3 ? analyzePlanGraph(plan) : null;
+  const unverified = plan.steps.filter(isStepUnverified);
   return {
     status: "plan_recorded",
     total: progress.total,
@@ -750,7 +753,11 @@ export function planReceipt(plan: Plan, warnings: string[] = []) {
           goal: plan.goal ?? "",
           done_when: plan.doneWhen?.length ?? 0,
           boundaries: plan.boundaries?.length ?? 0,
-          unverified: plan.steps.filter(isStepUnverified).length,
+          unverified: unverified.length,
+          ...(unverified.length ? {
+            missing_evidence: unverified.map(step => step.id),
+            next_action: "Call update_plan with evidence: [actual toolCallId] on each listed step. Text in verify is not evidence; reuse successful tool results rather than repeating actions.",
+          } : {}),
         }
       : {}),
     ...(v3 && analysis
@@ -787,7 +794,13 @@ export function planToolOutcome(
   input: unknown,
   options: PlanMergeOptions = {},
 ) {
-  const merged = mergePlan(previous, input, options);
+  const available = options.availableEvidence;
+  const allowed = available ? new Set(available.map(call => call.toolCallId)) : null;
+  const unknown = allowed ? [...new Set(normalizePlan(input).steps.flatMap(step => step.evidence ?? []).filter(id => !allowed.has(id)))] : [];
+  const merged = unknown.length ? {
+    plan: previous ?? {title:"",steps:[]}, accepted:false,
+    warnings:[`Unknown evidence toolCallIds: ${unknown.join(", ")}. Use actual IDs from available_evidence; never invent IDs or use a tool name as an ID.`],
+  } : mergePlan(previous, input, options);
   if (!merged.accepted) {
     // 拒绝的是本次输入,不是上一版计划。带上旧计划的权威快照,面板才不会
     // 回退去解析被拒的原始 input 而显示一份根本没被接受的图。
@@ -799,6 +812,7 @@ export function planToolOutcome(
           text: JSON.stringify({
             status: "plan_rejected",
             ...(merged.warnings.length ? { warnings: merged.warnings } : {}),
+            ...(available ? {available_evidence:available.slice(-12)} : {}),
           }),
           ...(keptSnapshot ? { metadata: { planV2: keptSnapshot as unknown as JsonValue } } : {}),
         },
@@ -811,7 +825,7 @@ export function planToolOutcome(
     output: [
       {
         type: "text" as const,
-        text: JSON.stringify(receipt),
+        text: JSON.stringify({...receipt,...(available && receipt.unverified ? {available_evidence:available.slice(-12)} : {})}),
         ...(snapshot ? { metadata: { planV2: snapshot as unknown as JsonValue } } : {}),
       },
     ],

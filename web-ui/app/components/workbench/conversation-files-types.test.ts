@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   fileIdFromUrl,
+  isTextAttachment,
   normalizeAbsolutePath,
   resolveWorkspaceFilePath,
   workspaceRawFileUrl,
@@ -65,6 +66,22 @@ describe("fileIdFromUrl", () => {
   test("非库内文件 URL 返回 null", () => {
     expect(fileIdFromUrl("https://example.com/a.png")).toBeNull();
     expect(fileIdFromUrl("/api/workspaces/w1/files/raw?path=a.pdf")).toBeNull();
+  });
+});
+
+describe("isTextAttachment", () => {
+  test("Markdown/文本类附件走文本预览(即使 MIME 是 octet-stream)", () => {
+    expect(isTextAttachment("公共数据库_AI科研方法论.md", "application/octet-stream")).toBe(true);
+    expect(isTextAttachment("notes.MARKDOWN", "")).toBe(true);
+    expect(isTextAttachment("data.json", "application/json")).toBe(true);
+    expect(isTextAttachment("readme.txt", "text/plain; charset=utf-8")).toBe(true);
+  });
+
+  test("二进制/媒体/办公文档仍留在媒体预览", () => {
+    expect(isTextAttachment("spec.pdf", "application/pdf")).toBe(false);
+    expect(isTextAttachment("photo.png", "image/png")).toBe(false);
+    expect(isTextAttachment("report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")).toBe(false);
+    expect(isTextAttachment("archive.zip", "application/zip")).toBe(false);
   });
 });
 

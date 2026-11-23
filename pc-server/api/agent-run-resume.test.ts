@@ -228,7 +228,8 @@ describe("POST resume 执行", () => {
     }
   });
 
-  test("总开关关闭:恢复写入被拒(409),不产生消息", async () => {
+  test("纯对话模式不启动 Agent 恢复，保留原历史", async () => {
+    registry.get(CONV)!.executionMode = "chat";
     insertRun({ id: "resume-run-off", conversationId: CONV, nodeId: null, engine: "chat", startedAt: 80 });
     updateRun("resume-run-off", { status: "stopped", stopReason: "interrupted", endedAt: 90 });
     setState({
@@ -242,6 +243,7 @@ describe("POST resume 执行", () => {
       expect((await call(`conversations/${CONV}/agent-runs/resume-run-off/resume`, "POST")).status).toBe(409);
       expect(registry.get(CONV)!.messages).toHaveLength(nodeCount);
     } finally {
+      registry.get(CONV)!.executionMode = "agent";
       setState({
         settings: {
           assistantId: "a1",

@@ -18,7 +18,9 @@ import {
   CircleHelp,
   CircleStop,
   Flag,
+  Gauge,
   Hash,
+  History,
   Loader2,
   LocateFixed,
   Pause,
@@ -35,22 +37,36 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import type { AgentRunEventDto, AgentRunStatus, AgentRunSummary, RunBoundarySnapshotDto } from "~/types";
+import type {
+  AgentRunEventDto,
+  AgentRunStatus,
+  AgentRunSummary,
+  RunBoundarySnapshotDto,
+} from "~/types";
 import {
   prependConversationAgentRunPage,
   useConversationAgentRun,
   useConversationStore,
 } from "~/stores/conversation-store";
-import { agentRunEpoch, fetchAgentRunEventPage, postAgentRunResume, useAgentRunEpoch } from "~/stores/agent-run-sync";
 import {
-  filterAgentRunEvents,
-  type AgentRunEventFilter,
-} from "~/lib/agent-run-events";
+  agentRunEpoch,
+  fetchAgentRunEventPage,
+  postAgentRunResume,
+  useAgentRunEpoch,
+} from "~/stores/agent-run-sync";
+import { filterAgentRunEvents, type AgentRunEventFilter } from "~/lib/agent-run-events";
 import { buildToolCallMessageIndex, shortToolCallId } from "~/lib/agent-run-locate";
 import { useAgentRunHistory, useAgentRunList } from "~/hooks/use-agent-run-history";
 import { useRunPlanProjection } from "~/hooks/use-run-plan-projection";
 import { useRunRecovery } from "~/hooks/use-run-recovery";
 import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { useAgentRunSelection } from "~/components/workspace/agent-run-selection";
 import api from "~/services/api";
 import { extractErrorMessage } from "~/lib/error";
@@ -80,6 +96,7 @@ const EVENT_ICON: Record<AgentRunEventDto["kind"], React.ComponentType<{ classNa
   run_started: Play,
   run_resumed: Play,
   round: Hash,
+  round_summary: Gauge,
   tool_call: Wrench,
   tool_execution: Terminal,
   tool_result: Check,
@@ -117,7 +134,10 @@ function payloadNumber(payload: Record<string, unknown>, key: string): number | 
 
 /** O4:边界快照的一行说明。full_access 只描述应用权限档;系统沙箱是否生效始终单独显示,
  *  两者同时为真时绝不合并成"无边界"。 */
-export function describeRunBoundary(boundary: RunBoundarySnapshotDto, t: TFunction<"page">): string {
+export function describeRunBoundary(
+  boundary: RunBoundarySnapshotDto,
+  t: TFunction<"page">,
+): string {
   const preset = t(`conversations.agent_run.boundary.preset.${boundary.permissionPreset}`, {
     defaultValue: boundary.permissionPreset,
   });
@@ -137,21 +157,20 @@ function boundaryUsageSuffix(payload: Record<string, unknown>, t: TFunction<"pag
   const parts: string[] = [];
   const access = payloadString(payload, "access");
   if (access) {
-    parts.push(
-      t(`conversations.agent_run.boundary.access.${access}`, { defaultValue: access }),
-    );
+    parts.push(t(`conversations.agent_run.boundary.access.${access}`, { defaultValue: access }));
   }
   const target = payloadString(payload, "targetScope");
   if (target) {
-    parts.push(
-      t(`conversations.agent_run.boundary.target.${target}`, { defaultValue: target }),
-    );
+    parts.push(t(`conversations.agent_run.boundary.target.${target}`, { defaultValue: target }));
   }
   return parts.join(" · ");
 }
 
 /** 审批 pending 的白名单缘由:reasonCode 本地化,危险规则只带规则 id(不含完整命令)。 */
-function approvalPendingReason(payload: Record<string, unknown>, t: TFunction<"page">): string | null {
+function approvalPendingReason(
+  payload: Record<string, unknown>,
+  t: TFunction<"page">,
+): string | null {
   const reasonCode = payloadString(payload, "reasonCode");
   const ruleId = payloadString(payload, "ruleId");
   if (reasonCode) {
@@ -201,6 +220,25 @@ export function describeAgentRunEvent(event: AgentRunEventDto, t: TFunction<"pag
       return t("conversations.agent_run.kind.round", {
         round: payloadNumber(payload, "round") ?? 0,
       });
+    case "round_summary": {
+      const calls =
+        (payloadNumber(payload, "calls") ?? 0) + (payloadNumber(payload, "nestedCalls") ?? 0);
+      const raw = payloadNumber(payload, "resultBytesRaw") ?? 0;
+      const clipped = payloadNumber(payload, "resultBytesClipped") ?? 0;
+      const saved = payloadNumber(payload, "savedTokensEst") ?? 0;
+      const bytes = (value: number) =>
+        value >= 1024 ? `${(value / 1024).toFixed(1)} KB` : `${Math.round(value)} B`;
+      return t("conversations.agent_run.kind.round_summary", {
+        round: payloadNumber(payload, "round") ?? 0,
+        calls,
+        raw: bytes(raw),
+        clipped: bytes(clipped),
+        saved:
+          saved >= 1
+            ? t("conversations.agent_run.kind.round_summary_saved", { tokens: Math.round(saved) })
+            : "",
+      });
+    }
     case "tool_call":
       return t("conversations.agent_run.kind.tool_call", {
         tool: payloadString(payload, "toolName") ?? "",
@@ -241,7 +279,8 @@ export function describeAgentRunEvent(event: AgentRunEventDto, t: TFunction<"pag
             })
           : t("conversations.agent_run.kind.approval_pending", { tool });
       }
-      if (decision === "approved") return t("conversations.agent_run.kind.approval_approved", { tool });
+      if (decision === "approved")
+        return t("conversations.agent_run.kind.approval_approved", { tool });
       if (decision === "denied") {
         return reason
           ? t("conversations.agent_run.kind.approval_denied_reason", { tool, reason })
@@ -278,7 +317,12 @@ export function describeAgentRunEvent(event: AgentRunEventDto, t: TFunction<"pag
 /** 工具/审批类事件的 toolCallId 后缀;定位入口不复制工具详情。 */
 function eventToolCallId(event: AgentRunEventDto): string | null {
   const kind = event.kind as string;
-  if (kind !== "tool_call" && kind !== "tool_result" && kind !== "approval" && kind !== "tool_execution") {
+  if (
+    kind !== "tool_call" &&
+    kind !== "tool_result" &&
+    kind !== "approval" &&
+    kind !== "tool_execution"
+  ) {
     return null;
   }
   return payloadString(payloadObject(event.payload), "toolCallId");
@@ -348,7 +392,7 @@ export function AgentRunEventList({
             const payload = payloadObject(event.payload);
             const boundaryId = payloadString(payload, "boundaryId");
             const boundary =
-              boundaryId && event.kind !== "boundary" ? boundaries[boundaryId] ?? null : null;
+              boundaryId && event.kind !== "boundary" ? (boundaries[boundaryId] ?? null) : null;
             return (
               <div key={event.seq} className="flex items-start gap-2">
                 <span className="w-16 shrink-0 text-[var(--ds-text-tertiary)] tabular-nums">
@@ -361,12 +405,7 @@ export function AgentRunEventList({
                     warn ? "text-warning" : "text-[var(--ds-text-tertiary)]",
                   )}
                 />
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 break-words",
-                    warn && "text-warning",
-                  )}
-                >
+                <span className={cn("min-w-0 flex-1 break-words", warn && "text-warning")}>
                   {describeAgentRunEvent(event, t)}
                   {boundaryId && event.kind !== "boundary" ? (
                     <span
@@ -500,9 +539,7 @@ export function AgentRunPanel({ conversationId }: { conversationId: string | nul
 
   const isHistory = selectedRunId !== null;
   const selectedHistory =
-    selectedRunId !== null
-      ? (list.runs.find((item) => item.id === selectedRunId) ?? null)
-      : null;
+    selectedRunId !== null ? (list.runs.find((item) => item.id === selectedRunId) ?? null) : null;
   const run = isHistory ? selectedHistory : entry.run;
   const events = isHistory ? history.events : entry.events;
   const hasMore = isHistory ? history.hasMore : entry.hasMore;
@@ -608,7 +645,10 @@ export function AgentRunPanel({ conversationId }: { conversationId: string | nul
   const phaseLabel = run
     ? t(`conversations.agent_run.phase.${run.phase}`, { defaultValue: run.phase })
     : null;
-  const toolCalls = events.reduce((count, event) => (event.kind === "tool_call" ? count + 1 : count), 0);
+  const toolCalls = events.reduce(
+    (count, event) => (event.kind === "tool_call" ? count + 1 : count),
+    0,
+  );
   const parts = [
     statusLabel,
     phaseLabel,
@@ -642,7 +682,7 @@ export function AgentRunPanel({ conversationId }: { conversationId: string | nul
             type="button"
             aria-expanded={open}
             onClick={() => setOpen((current) => !current)}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded text-left outline-none transition-colors hover:bg-[var(--ds-on-surface)] focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded text-left outline-none transition-colors hover:bg-[var(--ds-on-surface)] focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <StatusIcon
               className={cn(
@@ -667,34 +707,65 @@ export function AgentRunPanel({ conversationId }: { conversationId: string | nul
             />
           </button>
           {historyOptions.length > 0 || isHistory ? (
-            <select
-              aria-label={t("conversations.agent_run.selector_label")}
-              value={selectedRunId ?? "latest"}
-              onChange={(event) => {
-                if (event.target.value === "latest") {
-                  selectLatest();
-                  return;
-                }
-                selectRun(event.target.value);
-                setOpen(true);
-              }}
-              className="max-w-[10rem] shrink-0 rounded border border-[var(--ds-divider)] bg-transparent px-1 py-0.5 text-[11px] text-[var(--ds-text-secondary)] outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
-              <option value="latest">{t("conversations.agent_run.latest_option")}</option>
-              {selectedMissing && selectedRunId !== null ? (
-                <option value={selectedRunId}>{shortToolCallId(selectedRunId, 10)}</option>
-              ) : null}
-              {historyOptions.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {formatRunOption(item, t)}
-                </option>
-              ))}
-            </select>
+            // 原生 select 在窄侧栏 + 大字号下会把标题/时长顶穿(用户截图里的
+            // “本次运行 4:04[最新运行]”重叠)。改成图标下拉:触发器只占一个图标位,
+            // 运行列表放进菜单,宽度由菜单自己撑开。
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t("conversations.agent_run.selector_label")}
+                  title={t("conversations.agent_run.selector_label")}
+                  className="size-6 shrink-0 text-muted-foreground hover:text-foreground"
+                >
+                  <History className="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-w-72">
+                <DropdownMenuLabel>{t("conversations.agent_run.selector_label")}</DropdownMenuLabel>
+                <DropdownMenuItem
+                  className="gap-2"
+                  onSelect={() => {
+                    selectLatest();
+                  }}
+                >
+                  <Check
+                    aria-hidden
+                    className={cn("size-3.5 shrink-0", selectedRunId !== null && "opacity-0")}
+                  />
+                  <span className="truncate">{t("conversations.agent_run.latest_option")}</span>
+                </DropdownMenuItem>
+                {selectedMissing && selectedRunId !== null ? (
+                  <DropdownMenuItem disabled className="gap-2">
+                    <Check aria-hidden className="size-3.5 shrink-0" />
+                    <span className="truncate">{shortToolCallId(selectedRunId, 10)}</span>
+                  </DropdownMenuItem>
+                ) : null}
+                {historyOptions.map((item) => (
+                  <DropdownMenuItem
+                    key={item.id}
+                    className="gap-2"
+                    onSelect={() => {
+                      selectRun(item.id);
+                      setOpen(true);
+                    }}
+                  >
+                    <Check
+                      aria-hidden
+                      className={cn("size-3.5 shrink-0", selectedRunId !== item.id && "opacity-0")}
+                    />
+                    <span className="truncate">{formatRunOption(item, t)}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : null}
         </div>
         {run?.goal ? (
           <p
-            className="truncate border-t border-[var(--ds-divider)] px-3 py-1 text-[var(--ds-text-tertiary)]"
+            className="truncate border-t border-[var(--ds-divider)] px-3 py-1.5 leading-5 text-[var(--ds-text-tertiary)]"
             title={run.goal}
           >
             {t("conversations.agent_run.goal_label")}：{run.goal}
@@ -714,7 +785,7 @@ export function AgentRunPanel({ conversationId }: { conversationId: string | nul
         ) : null}
         {terminalReason ? (
           <p
-            className="truncate border-t border-[var(--ds-divider)] px-3 py-1 text-[var(--ds-text-tertiary)]"
+            className="truncate border-t border-[var(--ds-divider)] px-3 py-1.5 leading-5 text-[var(--ds-text-tertiary)]"
             title={terminalReason}
           >
             {t("conversations.agent_run.terminal_reason", { reason: terminalReason })}
@@ -726,13 +797,14 @@ export function AgentRunPanel({ conversationId }: { conversationId: string | nul
               type="button"
               size="xs"
               variant="tertiary"
+              className="shrink-0"
               onClick={handleResume}
               disabled={resuming || !conversationId}
             >
               {resuming ? <Loader2 className="animate-spin" /> : <RotateCcw />}
               {t("conversations.agent_run.actions.resume")}
             </Button>
-            <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--ds-text-tertiary)]">
+            <span className="min-w-0 flex-1 text-[11px] leading-relaxed text-[var(--ds-text-tertiary)]">
               {t("conversations.agent_run.actions.resume_hint")}
             </span>
           </div>
@@ -743,6 +815,7 @@ export function AgentRunPanel({ conversationId }: { conversationId: string | nul
               type="button"
               size="xs"
               variant="tertiary"
+              className="shrink-0"
               onClick={handleContinue}
               disabled={sending || !conversationId}
             >

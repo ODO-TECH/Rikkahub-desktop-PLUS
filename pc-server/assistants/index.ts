@@ -46,7 +46,7 @@ export function defaultAssistant(): Assistant {
     customBodies: [],
     mcpServers: [],
     mcpToolOverrides: {},
-    localTools: [{ type: "time_info" }],
+    localTools: [{ type: "time_info" }, { type: "ask_user" }],
     background: null,
     backgroundOpacity: 1,
     modeInjectionIds: [],

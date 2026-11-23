@@ -39,7 +39,7 @@ describe("更新通道指向本仓库", () => {
   });
 
   test("仓库是 ODO-TECH 的 PLUS 分支", () => {
-    expect(UPDATE_REPO).toBe("ODO-TECH/Rikkahub-desktoPLUS");
+    expect(UPDATE_REPO).toBe("ODO-TECH/Rikkahub-desktop-PLUS");
   });
 
   test("镜像不指向上游 R2 桶", () => {

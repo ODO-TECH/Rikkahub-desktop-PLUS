@@ -1,5 +1,5 @@
 // 内置（进程内）MCP 传输回归：注册表 JSON-RPC 面、播种与复位、以及经由常规 mcp.ts 路径的
-// 工具同步/调用/日志信封——下游代码不应感知到第三种传输的存在。
+// 工具同步/调用/日志信封——下游代码不应感知到第三种传输的存在，也不该感知到内置服务器有几个。
 import { afterEach, describe, expect, test } from "bun:test";
 
 import type { JsonValue } from "../foundation/types";
@@ -10,6 +10,8 @@ import {
   BUILTIN_FETCH_SERVER_ID,
   BUILTIN_FETCH_TOOL_FULL_NAME,
   BUILTIN_MCP_TRANSPORT,
+  BUILTIN_MOEGIRL_SERVER_ID,
+  BUILTIN_MOEGIRL_TOOL_FULL_NAMES,
   builtinLabel,
   builtinMcpRequest,
   builtinServerName,
@@ -28,6 +30,16 @@ function builtinRecord(overrides: Record<string, JsonValue> = {}): Record<string
   };
 }
 
+function moegirlRecord(overrides: Record<string, JsonValue> = {}): Record<string, JsonValue> {
+  return {
+    id: BUILTIN_MOEGIRL_SERVER_ID,
+    type: BUILTIN_MCP_TRANSPORT,
+    url: "",
+    commonOptions: { enable: true, name: builtinServerName(BUILTIN_MOEGIRL_SERVER_ID), headers: [], tools: [] },
+    ...overrides,
+  };
+}
+
 describe("内置服务器注册表", () => {
   test("initialize 报出协议版本与服务器名", async () => {
     const result = (await builtinMcpRequest(builtinRecord(), "initialize", {})) as Record<string, JsonValue>;
@@ -35,10 +47,23 @@ describe("内置服务器注册表", () => {
     expect(typeof result.protocolVersion).toBe("string");
   });
 
+  test("萌百内置服务器同样按 id 报名，名字来自注册表而非记录", async () => {
+    const result = (await builtinMcpRequest(moegirlRecord({ commonOptions: { name: "改名试试" } }), "initialize", {})) as Record<string, JsonValue>;
+    expect(result.serverInfo).toEqual({ name: "@rikkahub/moegirl", version: "1.0.0" });
+  });
+
   test("tools/list 只暴露 fetch，且带完整 inputSchema", async () => {
     const result = (await builtinMcpRequest(builtinRecord(), "tools/list", {})) as { tools: Array<Record<string, JsonValue>> };
     expect(result.tools.map((tool) => tool.name)).toEqual(["fetch"]);
     expect((result.tools[0]!.inputSchema as Record<string, JsonValue>).required).toEqual(["url"]);
+  });
+
+  test("萌百服务器暴露三级检索三件套，schema 各自锁必填项", async () => {
+    const result = (await builtinMcpRequest(moegirlRecord(), "tools/list", {})) as { tools: Array<Record<string, JsonValue>> };
+    expect(result.tools.map((tool) => tool.name)).toEqual(["moe_search", "moe_get", "moe_comments"]);
+    const required = result.tools.map((tool) => (tool.inputSchema as Record<string, JsonValue>).required);
+    expect(required).toEqual([["query"], ["title"], ["title"]]);
+    expect(BUILTIN_MOEGIRL_TOOL_FULL_NAMES).toEqual(["mcp__moe_search", "mcp__moe_get", "mcp__moe_comments"]);
   });
 
   test("tools/list 每次现算日期，进程常驻几天也不会给出过期日期", async () => {
@@ -55,6 +80,9 @@ describe("内置服务器注册表", () => {
 
   test("调用未注册的工具抛错而不是静默返回空结果", async () => {
     await expect(builtinMcpRequest(builtinRecord(), "tools/call", { name: "nope", arguments: {} })).rejects.toThrow(/Tool not found/);
+    // 两个内置服务器各查各的表：fetch 里没有 moe_search，反之亦然。
+    await expect(builtinMcpRequest(builtinRecord(), "tools/call", { name: "moe_search", arguments: {} })).rejects.toThrow(/Tool not found/);
+    await expect(builtinMcpRequest(moegirlRecord(), "tools/call", { name: "fetch", arguments: {} })).rejects.toThrow(/Tool not found/);
   });
 
   test("未知内置 id 直接拒绝", async () => {
@@ -65,6 +93,7 @@ describe("内置服务器注册表", () => {
     expect(isBuiltinMcpServer(builtinRecord())).toBe(true);
     expect(isBuiltinMcpServer({ id: "x", type: "stdio" })).toBe(false);
     expect(isBuiltinMcpServerId(BUILTIN_FETCH_SERVER_ID)).toBe(true);
+    expect(isBuiltinMcpServerId(BUILTIN_MOEGIRL_SERVER_ID)).toBe(true);
     expect(isBuiltinMcpServerId("user_server")).toBe(false);
     expect(builtinLabel(builtinRecord())).toBe(`builtin://${BUILTIN_FETCH_SERVER_ID}`);
     expect(BUILTIN_FETCH_TOOL_FULL_NAME).toBe("mcp__fetch");
@@ -72,14 +101,17 @@ describe("内置服务器注册表", () => {
 });
 
 describe("内置服务器播种（ensureBuiltinMcpServers）", () => {
-  test("缺失时播到列表首位并带着可读的名字", () => {
+  test("缺失时全部播到列表首位，顺序即注册表顺序", () => {
     const seeded = ensureBuiltinMcpServers([{ id: "user", type: "streamable_http", url: "https://a/mcp" }]) as Array<Record<string, JsonValue>>;
-    expect(seeded.map((server) => server.id)).toEqual([BUILTIN_FETCH_SERVER_ID, "user"]);
+    expect(seeded.map((server) => server.id)).toEqual([BUILTIN_FETCH_SERVER_ID, BUILTIN_MOEGIRL_SERVER_ID, "user"]);
     const record = seeded[0]!;
     expect(record.type).toBe(BUILTIN_MCP_TRANSPORT);
     const common = record.commonOptions as Record<string, JsonValue>;
     expect(common.enable).toBe(true);
     expect(common.name).toBe("@rikkahub/fetch");
+    const moegirl = seeded[1]!;
+    expect(moegirl.type).toBe(BUILTIN_MCP_TRANSPORT);
+    expect((moegirl.commonOptions as Record<string, JsonValue>).name).toBe("@rikkahub/moegirl");
   });
 
   test("用户关掉的开关与逐工具偏好被继承，脏字段被注册表覆盖", () => {
@@ -98,8 +130,13 @@ describe("内置服务器播种（ensureBuiltinMcpServers）", () => {
           tools: [{ name: "fetch", enable: false, needsApproval: true }],
         },
       },
+      {
+        id: BUILTIN_MOEGIRL_SERVER_ID,
+        type: BUILTIN_MCP_TRANSPORT,
+        commonOptions: { enable: false, tools: [{ name: "moe_comments", enable: false }] },
+      },
     ]) as Array<Record<string, JsonValue>>;
-    expect(polluted).toHaveLength(1);
+    expect(polluted).toHaveLength(2);
     const record = polluted[0]!;
     expect(record.url).toBe("");
     expect("command" in record).toBe(false);
@@ -111,15 +148,20 @@ describe("内置服务器播种（ensureBuiltinMcpServers）", () => {
     expect(common.headers).toEqual([]);
     expect("oauth" in common).toBe(false);
     expect("lastSyncError" in common).toBe(false);
+    // 关掉一个内置服务器不会连带关掉另一个——两份记录各继承各自的偏好。
+    expect((polluted[1]!.commonOptions as Record<string, JsonValue>).enable).toBe(false);
+    expect((polluted[1]!.commonOptions as Record<string, JsonValue>).tools).toEqual([{ name: "moe_comments", enable: false }]);
   });
 
   test("重复记录被折叠成一条", () => {
     const deduped = ensureBuiltinMcpServers([
       builtinRecord(),
       builtinRecord(),
+      moegirlRecord(),
+      moegirlRecord(),
       { id: "user", type: "streamable_http" },
     ]);
-    expect(deduped).toHaveLength(2);
+    expect(deduped).toHaveLength(3);
   });
 
   test("幂等：对已播种的列表再跑一次不变", () => {
@@ -132,7 +174,7 @@ describe("加载链播种（normalizeState）", () => {
   test("空设置加载后也带内置服务器", () => {
     const state = normalizeState({ settings: {} } as any);
     const servers = state.settings.mcpServers as Array<Record<string, JsonValue>>;
-    expect(servers[0]?.id).toBe(BUILTIN_FETCH_SERVER_ID);
+    expect(servers.map((server) => server.id)).toContain(BUILTIN_MOEGIRL_SERVER_ID);
     expect(servers[0]?.type).toBe(BUILTIN_MCP_TRANSPORT);
   });
 
@@ -207,5 +249,35 @@ describe("内置服务器走常规 mcp.ts 路径", () => {
     })) as Record<string, JsonValue>;
     expect(result.isError).toBe(false);
     expect(JSON.stringify(result)).toContain("内置抓取结果");
+  });
+
+  test("萌百服务器走同一条 mcp.ts 路径：命中工具、记同形日志、不出网到第三个地址", async () => {
+    const urls: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ query: { pages: {} } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+
+    const server = moegirlRecord();
+    (server.commonOptions as Record<string, JsonValue>).tools = [{ name: "moe_search", enable: true }];
+    const assistant = { mcpServers: [BUILTIN_MOEGIRL_SERVER_ID] } as any;
+    expect(resolveMcpToolServer(assistant, "mcp__moe_search", [server])?.rawToolName).toBe("moe_search");
+
+    const logs: Array<Record<string, JsonValue>> = [];
+    const log: McpLogCallback = (entry) => logs.push(entry as unknown as Record<string, JsonValue>);
+    const result = (await mcpJsonRpc(server, "tools/call", {
+      name: "moe_search",
+      arguments: { query: "⑨" },
+    }, log)) as Record<string, JsonValue>;
+    expect(result.isError).toBe(false);
+    expect(urls.every((url) => url.startsWith("https://zh.moegirl.org.cn/api.php?"))).toBe(true);
+    expect(logs[0]!.method).toBe("BUILTIN");
+    expect(logs[0]!.url).toBe(`builtin://${BUILTIN_MOEGIRL_SERVER_ID}`);
   });
 });

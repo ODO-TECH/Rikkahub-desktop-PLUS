@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RikkaHub Desktop PLUS",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "identifier": "com.rikkahub.pc",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -39,7 +39,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "ODO-TECH",
-    "homepage": "https://github.com/ODO-TECH/Rikkahub-desktoPLUS",
+    "homepage": "https://github.com/ODO-TECH/Rikkahub-desktop-PLUS",
     "category": "Productivity",
     "copyright": "© 2026 yuh-G. Based on RikkaHub by @re-ovo. Community branch by ODO-TECH.",
     "shortDescription": "Native Windows and Linux LLM chat client, self-hostable with Docker.",

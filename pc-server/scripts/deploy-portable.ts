@@ -13,7 +13,7 @@
 // 用法: bun run scripts/deploy-portable.ts --target "D:/Software/Produce/RikkaHub_portable"
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 
 /** 冒烟探针端口:避开默认 17455,免得撞上用户正在跑的实例。 */
 const PROBE_PORT_BASE = 17599;
@@ -118,6 +118,7 @@ function uiHash(uiDir: string): string {
 async function main(): Promise<void> {
   const target = parseTarget(process.argv.slice(2));
   const repoRoot = resolve(import.meta.dir, "..", "..");
+  const pcServerDir = resolve(import.meta.dir, "..");
 
   const srcExe = join(repoRoot, "dist", "rikkahub-pc.exe");
   const srcUi = join(repoRoot, "web-ui", "build", "client");
@@ -156,11 +157,24 @@ async function main(): Promise<void> {
   mkdirSync(targetUi, { recursive: true });
   cpSync(srcUi, targetUi, { recursive: true, force: true });
 
-  // icons / fonts 紧挨 exe 落地:漏了会让品牌 Logo 与内置字体静默回退兜底。
-  for (const assetDir of ["icons", "fonts"] as const) {
+  // icons / fonts / yukkuri-sdk 紧挨 exe 落地:漏了会让品牌 Logo 与内置字体静默回退兜底,
+  // 油库里语音则直接「引擎未就绪」(paths.ts 的 yukkuriSdkDir 按 rootDir 解析)。
+  for (const assetDir of ["icons", "fonts", "yukkuri-sdk"] as const) {
     const from = join(repoRoot, assetDir);
     if (!existsSync(from)) continue;
     cpSync(from, join(target, assetDir), { recursive: true, force: true });
+  }
+
+  // koffi 原生件按它自己的搜索布局放 exe 同级(见 media/yukkuri/native-shim.ts):
+  // 缺了它,便携版点朗读会报「Cannot find the native Koffi module」。
+  const addonFrom = join(pcServerDir, "node_modules", "@koromix", "koffi-win32-x64", "win32_x64", "koffi.node");
+  if (existsSync(addonFrom)) {
+    const addonTo = join(target, "koffi", "build", "win32_x64", "koffi.node");
+    mkdirSync(dirname(addonTo), { recursive: true });
+    cpSync(addonFrom, addonTo, { force: true });
+    console.log(`[deploy-portable] koffi.node -> ${addonTo}`);
+  } else {
+    console.warn("[deploy-portable] 警告:未找到 @koromix/koffi-win32-x64,便携版里的油库里语音将不可用(先 bun install)。");
   }
 
   const finalStat = statSync(targetExe);

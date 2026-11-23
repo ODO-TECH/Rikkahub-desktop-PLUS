@@ -28,7 +28,9 @@ export function CompactionDetailDialog({
   const time = record?.createdAt ? formatCompactionTime(record.createdAt) : null;
   const summaryDelta = info ? info.summaryTokens - info.previousSummaryTokens : 0;
   // 本次压缩对有效上下文的净影响:被摘要吸收的原文 − 摘要自身的增量。
-  // 二次浓缩导致摘要变短时 delta 为负,净减少会大于原文量(上一版摘要也缩了),口径仍成立。
+  // v1 链式记录里增量是"比上一版多出来的部分";S5 块化后每块的增量基准归零
+  // (块之间是并列关系,不是新旧版本),净省因此恒等于"本块原文 − 本块摘要"。
+  // 分层蒸馏让摘要变短时 delta 为负,净减少会大于原文量,口径仍成立。
   const netSaved = info ? info.record.tokensBefore - summaryDelta : 0;
 
   return (
@@ -48,6 +50,20 @@ export function CompactionDetailDialog({
             </DialogHeader>
 
             <div className="-mr-2 min-h-0 flex-1 space-y-3 overflow-y-auto pr-2">
+              {info.blockTotal > 1 || info.tier > 1 ? (
+                <p className="text-xs text-muted-foreground">
+                  {t("conversations.compaction_detail.block_line", {
+                    index: info.blockOrdinal,
+                    total: info.blockTotal,
+                    tier: info.tier,
+                  })}
+                  {info.tier > 1 && record?.consumedRecordIds?.length
+                    ? ` · ${t("conversations.compaction_detail.distilled_from", {
+                        count: record.consumedRecordIds.length,
+                      })}`
+                    : ""}
+                </p>
+              ) : null}
               <div className="grid grid-cols-3 gap-2">
                 <Stat
                   label={t("conversations.compaction_detail.tokens_before")}

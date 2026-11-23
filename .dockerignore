@@ -26,8 +26,7 @@ lobehub/
 kelivo/
 opencode-dev/
 tmp_doc/
-# pi/ 是本地 vendor 浅克隆(基线 + pi-patches),镜像构建时在容器内按 docs/BUILD.md
-# 的同一条命令重新 clone,宿主机副本不进上下文。
+# 完整 pi 源码不参与本版构建。
 pi/
 # desktop-shell/ 是 Windows 原生壳(C#/WebView2),与 Linux 镜像无关。
 desktop-shell/

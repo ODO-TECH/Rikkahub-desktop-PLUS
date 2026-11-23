@@ -18,10 +18,17 @@
 import { existsSync } from "node:fs";
 import process from "node:process";
 import type { StoredFile } from "../foundation/types";
+import { reportError } from "../observability/app-errors";
+import {
+  isDeepSeekOcrConfigured,
+  isDeepSeekOcrDocument,
+  recognizeFileWithDeepSeekOcr,
+} from "../media/ocr";
 import {
   extractStoredFileText,
   extractedTextPath,
   isExtractableDocument,
+  readExtractedTextSync,
   writeExtractedTextSidecar,
 } from "./index";
 
@@ -65,11 +72,95 @@ const MAX_CONCURRENT_EXTRACTIONS = 2;
 // 前进就不该被杀,真卡死(单页死循环)才需要收割。
 const STALL_TIMEOUT_MS = 5 * 60_000;
 
+/** 本地提出来的文字少到这个程度 → 判为扫描件(非空白字符/页)。
+ *  参照:正常排版的中文 PDF 一页 500～1500 字;扫描件的文本层往往只剩水印与页码,
+ *  光判「为空」会漏掉带水印的那一批,而那正是用户最想让它读出来的文件。
+ *  导出仅为让单测能拿同一个数算边界,不在别处复制判据。 */
+export const DEEPSEEK_OCR_SPARSE_CHARS_PER_PAGE = 30;
+
+/**
+ * 「本地读不出来 → 升级到 DeepSeek 官方 OCR」的唯一决策点(导出只为让这条花钱的
+ * 判定链可被直接断言,业务侧不要在别处复制判据)。
+ * 两条来路共用:① 子进程跑完但全文为空/像扫描件;② 本地根本不解析的格式(老 DOC/PPT)。
+ * EPUB/纯文本类不在官方格式表内,永不升级;开关关或 Key 未填时恒为 null(行为与引入前一致)。
+ */
+export function deepSeekOcrEscalationFor(
+  entry: Pick<StoredFile, "fileName" | "mime">,
+  localText: string,
+  pageCount: number | null,
+): "empty" | "sparse" | null {
+  if (!isDeepSeekOcrConfigured()) return null;
+  if (!isDeepSeekOcrDocument(entry.fileName, entry.mime)) return null;
+  const chars = localText.replace(/\s+/g, "").length;
+  if (chars === 0) return "empty";
+  if (pageCount && pageCount > 0 && chars < DEEPSEEK_OCR_SPARSE_CHARS_PER_PAGE * pageCount) return "sparse";
+  return null;
+}
+
+// 官方 OCR 升级队列:与本地提取各自占用 MAX_CONCURRENT_EXTRACTIONS 名额。
+// 单账号官方并发上限 15(超出 429),这里压到 2 已经足够保守——批量拖 50 个扫描件
+// 也不会瞬间打满配额,而本地那条「提取是 CPU 密集活」的理由对网络等待同样不该被绕过。
+const ocrQueue: Array<{ entry: StoredFile; reason: "empty" | "sparse"; pageCount: number | null }> = [];
+let ocrActiveCount = 0;
+
+function queueDeepSeekOcrEscalation(entry: StoredFile, reason: "empty" | "sparse", pageCount: number | null): void {
+  if (registry.has(entry.id) && registry.get(entry.id)?.status === "pending") return;
+  registry.set(entry.id, { status: "pending", total: pageCount ?? undefined });
+  ocrQueue.push({ entry, reason, pageCount });
+  pumpOcr();
+}
+
+function pumpOcr(): void {
+  while (ocrActiveCount < MAX_CONCURRENT_EXTRACTIONS && ocrQueue.length > 0) {
+    const task = ocrQueue.shift();
+    if (!task) break;
+    ocrActiveCount += 1;
+    void runDeepSeekOcrEscalation(task.entry, task.reason, task.pageCount).finally(() => {
+      ocrActiveCount -= 1;
+      pumpOcr();
+    });
+  }
+}
+
+/** 升级执行:成功才写旁车缓存;空结果与失败一律保留本地文本与原状态——绝不把已有文字抹掉,
+ *  也不把 done 打成 empty(旁车缓存天然防重复计费,同一文件本次运行只 OCR 一次)。 */
+async function runDeepSeekOcrEscalation(entry: StoredFile, reason: "empty" | "sparse", pageCount: number | null): Promise<void> {
+  const hadLocalText = readExtractedTextSync(entry).trim().length > 0;
+  const started = Date.now();
+  try {
+    const result = await recognizeFileWithDeepSeekOcr(entry.path, entry.fileName);
+    if (result.text.trim()) {
+      writeExtractedTextSidecar(entry.id, result.text);
+      registry.set(entry.id, { status: "done", done: result.pageCount, total: result.pageCount });
+      console.log(
+        `[extract] ${entry.fileName} DeepSeek OCR(${reason}) done: ${result.pageCount} 页`
+        + (result.truncatedPages.length > 0 ? `，其中 ${result.truncatedPages.length} 页被输出上限截断` : "")
+        + `，${Date.now() - started}ms`,
+      );
+      return;
+    }
+    console.log(`[extract] ${entry.fileName} DeepSeek OCR(${reason}) 没有识别出文字`);
+    registry.set(entry.id, hadLocalText ? { status: "done" } : { status: "empty" });
+  } catch (err) {
+    console.warn(`[extract] ${entry.fileName} DeepSeek OCR(${reason}) failed:`, err);
+    // info 级留痕(错误中心可见、不弹全局 toast):本地结果仍在,用户不会丢内容。
+    reportError("provider", "info", "DeepSeek OCR 文档识别失败，已保留本地解析结果", err, "deepseek_ocr_document_failed", { fileName: entry.fileName });
+    registry.set(entry.id, hadLocalText ? { status: "done" } : { status: "empty" });
+  }
+}
+
 /** 后台提取入口(3-4 的 ensureExtractedTextAsync 迁移至此,语义不变:调用即返回,
  *  结果写旁车缓存,本次请求方降级 fallbackDocumentText,下次发送生效)。 */
 export function ensureExtractedTextAsync(entry: StoredFile): void {
-  if (!isExtractableDocument(entry)) return;
   if (registry.has(entry.id)) return;
+  // 本地解析不了的文档(老 DOC/PPT 这类):开关开着且官方吃这个格式时直接升级到官方 OCR
+  // ——它们此前只能落到「内容无法提取」的占位提示,是净收益档;开关关时仍按原样 return。
+  if (!isExtractableDocument(entry)) {
+    const reason = deepSeekOcrEscalationFor(entry, "", null);
+    if (!reason) return;
+    queueDeepSeekOcrEscalation(entry, reason, null);
+    return;
+  }
   if (existsSync(extractedTextPath(entry.id))) {
     registry.set(entry.id, { status: "done" });
     return;
@@ -82,12 +173,12 @@ export function ensureExtractedTextAsync(entry: StoredFile): void {
 /** 提取状态查询(files/:id/extraction 端点用)。重启后旁车缺失且无任务时自动重新
  *  拉起——轮询本身就是自愈触发器,上次没抽完就退出的文件不会永远停在"解析中"。 */
 export function getExtractionStatus(entry: StoredFile): ExtractionStatus {
-  if (!isExtractableDocument(entry)) return { status: "none", done: null, total: null };
   const current = registry.get(entry.id);
   if (current) {
     return { status: current.status, done: current.done ?? null, total: current.total ?? null };
   }
   if (existsSync(extractedTextPath(entry.id))) return { status: "done", done: null, total: null };
+  if (!isExtractableDocument(entry)) return { status: "none", done: null, total: null };
   ensureExtractedTextAsync(entry);
   return { status: "pending", done: null, total: null };
 }
@@ -107,6 +198,8 @@ function pump(): void {
 async function runExtractionChild(entry: StoredFile): Promise<void> {
   const t0 = Date.now();
   let result: "ok" | "empty" | null = null;
+  // 子进程逐页进度里最后一次报的总页数:OCR 升级的「文本密度像扫描件」判定要用它。
+  let lastTotalPages: number | null = null;
   try {
     const child = Bun.spawn({
       cmd: [process.execPath, ...process.argv.slice(1)],
@@ -155,6 +248,7 @@ async function runExtractionChild(entry: StoredFile): Promise<void> {
           const done = Number(doneRaw);
           const total = Number(totalRaw);
           if (Number.isFinite(done) && Number.isFinite(total)) {
+            lastTotalPages = total;
             registry.set(entry.id, { status: "pending", done, total });
           }
         } else if (line.startsWith("EXTRACT_RESULT ")) {
@@ -176,6 +270,13 @@ async function runExtractionChild(entry: StoredFile): Promise<void> {
       registry.set(entry.id, { status: "failed" });
       const reason = killedForStall ? `stalled >${STALL_TIMEOUT_MS}ms, killed` : `exit ${exitCode}`;
       console.warn(`[extract] ${entry.fileName} failed (${reason}) ${stderrText.slice(0, 1000)}`);
+    }
+    // 本地解析「读不出来」的那两档(全空 / 像扫描件)才升级给 DeepSeek 官方 OCR。
+    // 判定与开关都在 deepSeekOcrEscalationFor 单点;子进程崩溃/超时的 failed 不升级——
+    // 那类文件重试才是正解,拿付费接口去填一个必崩的坑是双重损失。
+    if (exitCode === 0 && (result === "ok" || result === "empty")) {
+      const reason = deepSeekOcrEscalationFor(entry, readExtractedTextSync(entry), lastTotalPages);
+      if (reason) queueDeepSeekOcrEscalation(entry, reason, lastTotalPages);
     }
   } catch (err) {
     registry.set(entry.id, { status: "failed" });

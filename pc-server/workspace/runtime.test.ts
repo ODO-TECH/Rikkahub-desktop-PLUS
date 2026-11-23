@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertWideWritablePath } from "./boundary";
 import type { FakeSshServer } from "../test-utils/fake-ssh-server";
 
 // paths.ts 在 import 时刻固化 dataDir——必须先设环境变量再动态加载被测模块。
@@ -195,8 +196,8 @@ describe("宽/严边界选择(权限档位改版:区外写入经批准放行)", 
     const sysTarget = process.platform === "win32"
       ? join(process.env.SystemRoot ?? String.raw`C:\Windows`, "Temp", "rkh-allow-test.txt")
       : "/tmp/rkh-allow-test.txt";
-    await runtime.runWorkspaceTool("write", { path: sysTarget, content: "x" }, { conversationId: conversation.id });
-    expect(readFileSync(sysTarget, "utf8")).toBe("x");
+    // Check policy without depending on permission to mutate the real system directory.
+    expect(() => assertWideWritablePath(sysTarget, workspace.root)).not.toThrow();
     // 应用数据目录 pc-data:同不再硬拒。写测试专属工作区根下的文件,不碰真实状态文件。
     const { dataDir } = await import("../foundation/paths");
     const dataTarget = join(workspace.root, "appdata-ok.txt");

@@ -28,35 +28,10 @@ RUN cd node_modules/react-dom && cp server.node.js server.bun.js
 COPY pc-server/ ../build/pc-server/
 RUN bun run build
 
-# pi/ 是 gitignore 的本地浅克隆(vendored 源码),不进构建上下文。pc-server 直接
-# import 其 TS 源码,缺它 bun build --compile 第一步解析 import 即失败。
-# 按 docs/BUILD.md「还原 pi vendor」重建:浅克隆上游基线 + 应用 pi-patches/*.patch。
-# --no-install-recommends 防止 bookworm-slim 带 ca-certificates 缺失导致 https clone 失败。
-# 装 pi 自己的依赖(proper-lockfile/typebox/openai 等,bun build 会把它们一并打包)。
-#
-# 模型数据走 pi-model-data/ 快照(host 仓库 tracked,与 Dockerfile 的 pi pin 配对),
-# 不跑 generate-models:上游生成器是破坏性的(先删全部 *.models.ts 分片再按
-# models.dev 【当天】状态重建)——第三方数据漂移(实测 2026-09:kimi-for-coding 被
-# models.dev 摘除)会让 tracked 分片被删后无人重建,或聚合器引用的 data/*.json
-# 缺失,bun build 解析 import 即失败:每次构建都在赌 models.dev 的实时状态。
-# 快照 = 本地 pi/(pin 基线 + 补丁)生成的 data/ 原样拷贝,与 39 个 tracked 分片
-# 严格配对,构建从此可复现。pi 升级换基线时:本地 pi 重跑 bun run generate-models
-# (它产出与新版分片配对的 data/),再刷新本目录快照(升级流程第 2 步刷新 patches
-# 的同款时机)。
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
+# The lightweight kernel and OAuth snapshot are local source; no pi checkout.
 WORKDIR /build
-COPY pi-patches/ ./pi-patches/
-COPY pi-model-data/ ./pi-model-data/
-RUN git clone --filter=blob:none --no-checkout https://github.com/earendil-works/pi.git pi && \
-    cd pi && \
-    git checkout d981de1229ef899957bbe968bc8dcda02a21f477 && \
-    git reset --hard && \
-    git apply ../pi-patches/*.patch && \
-    bun install && \
-    mkdir -p packages/ai/src/providers/data && \
-    cp ../pi-model-data/*.json ../pi-model-data/.manifest.json packages/ai/src/providers/data/
+COPY agent-kernel/ ./agent-kernel/
+COPY vendor/ ./vendor/
 
 # Compile server — cross-compile to match the runtime platform.
 # Lay out a separate /build/pc-server subtree so we don't mix the pc-server lockfile

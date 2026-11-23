@@ -20,12 +20,14 @@ import {
 
 import { useConversationStore } from "~/stores/conversation-store";
 import { useAgentRunEpoch } from "~/stores/agent-run-sync";
+import { getLatestPlanEntry, planViewFromProjection, type RunPlanView } from "~/lib/plan-model";
 import {
-  getLatestPlanEntry,
-  planViewFromProjection,
-  type RunPlanView,
-} from "~/lib/plan-model";
-import { isPlanV2, isPlanV3, isStepUnverified, planProgress, type PlanStep } from "@server/tools/plan";
+  isPlanV2,
+  isPlanV3,
+  isStepUnverified,
+  planProgress,
+  type PlanStep,
+} from "@server/tools/plan";
 import { analyzePlanGraph, type PlanGraphAnalysis } from "@server/tools/plan-graph";
 import { buildToolCallMessageIndex, shortToolCallId } from "~/lib/agent-run-locate";
 import { useRunPlanProjection } from "~/hooks/use-run-plan-projection";
@@ -158,8 +160,8 @@ function StepEvidence({
       {evidence.map((toolCallId) => {
         const location = view?.toolLocations[toolCallId];
         const messageId = view
-          ? location?.messageId ?? null
-          : latestToolMessages?.get(toolCallId) ?? null;
+          ? (location?.messageId ?? null)
+          : (latestToolMessages?.get(toolCallId) ?? null);
         const state: ChipState = !messageId
           ? "missing"
           : view
@@ -236,7 +238,14 @@ export function PlanStepGraphBadges({
   );
 }
 
-export function PlanPanel({ conversationId }: { conversationId?: string | null }) {
+export function PlanPanel({
+  conversationId,
+  variant = "panel",
+}: {
+  conversationId?: string | null;
+  /** panel=工作台整栏(默认);inline=输入区上方的可折叠卡(自带内部滚动)。 */
+  variant?: "panel" | "inline";
+}) {
   const { t } = useTranslation("common");
   const navigate = useNavigate();
   const cid = conversationId ?? null;
@@ -274,14 +283,18 @@ export function PlanPanel({ conversationId }: { conversationId?: string | null }
   const handleLocate = React.useCallback(
     (messageId: string, toolCallId: string) => {
       if (!cid) return;
-      navigate(`/c/${cid}?msg=${encodeURIComponent(messageId)}&tool=${encodeURIComponent(toolCallId)}`);
+      navigate(
+        `/c/${cid}?msg=${encodeURIComponent(messageId)}&tool=${encodeURIComponent(toolCallId)}`,
+      );
     },
     [cid, navigate],
   );
 
   if (!cid) {
     return (
-      <PanelStatus icon={<ListChecks className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}>
+      <PanelStatus
+        icon={<ListChecks className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}
+      >
         <p>{t("workbench.plan.empty")}</p>
       </PanelStatus>
     );
@@ -291,7 +304,9 @@ export function PlanPanel({ conversationId }: { conversationId?: string | null }
     if (historyRunId) {
       if (projectionState.error === "missing") {
         return (
-          <PanelStatus icon={<CircleAlert className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}>
+          <PanelStatus
+            icon={<CircleAlert className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}
+          >
             <HistoryBadge runId={historyRunId} t={t} />
             <p>{t("workbench.plan.history_missing")}</p>
           </PanelStatus>
@@ -325,14 +340,18 @@ export function PlanPanel({ conversationId }: { conversationId?: string | null }
         ? UNAVAILABLE_KEYS[view.unavailableReason]
         : UNAVAILABLE_KEYS.no_plan;
       return (
-        <PanelStatus icon={<ListChecks className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}>
+        <PanelStatus
+          icon={<ListChecks className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}
+        >
           <HistoryBadge runId={historyRunId} t={t} />
           <p>{t(`workbench.plan.${reasonKey}`)}</p>
         </PanelStatus>
       );
     }
     return (
-      <PanelStatus icon={<ListChecks className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}>
+      <PanelStatus
+        icon={<ListChecks className="size-6 text-muted-foreground/60" strokeWidth={1.75} />}
+      >
         <p>{t("workbench.plan.empty")}</p>
       </PanelStatus>
     );
@@ -341,8 +360,8 @@ export function PlanPanel({ conversationId }: { conversationId?: string | null }
   const progress = planProgress(plan);
   const pct = (n: number) => (progress.total > 0 ? Math.round((n / progress.total) * 100) : 0);
   const sourceToolCallId = historyRunId
-    ? view?.sourceToolCallId ?? null
-    : latestEntry?.toolCallId ?? null;
+    ? (view?.sourceToolCallId ?? null)
+    : (latestEntry?.toolCallId ?? null);
   const sourceLocation = sourceToolCallId
     ? historyRunId
       ? view?.toolLocations[sourceToolCallId]
@@ -359,7 +378,12 @@ export function PlanPanel({ conversationId }: { conversationId?: string | null }
     : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-3">
+    <div
+      className={cn(
+        "flex min-h-0 flex-col gap-3 p-3",
+        variant === "inline" ? "max-h-[46vh] overflow-y-auto" : "h-full",
+      )}
+    >
       <div className="shrink-0">
         <div className="flex items-baseline justify-between gap-2">
           <div className="min-w-0 truncate text-sm font-medium">
@@ -446,7 +470,11 @@ export function PlanPanel({ conversationId }: { conversationId?: string | null }
         </details>
       ) : null}
 
-      <ol className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+      <ol
+        className={
+          variant === "inline" ? "space-y-1 pr-1" : "min-h-0 flex-1 space-y-1 overflow-y-auto pr-1"
+        }
+      >
         {plan.steps.map((step, index) => {
           const Icon = STATUS_ICONS[step.status] ?? CircleDashed;
           const settled = step.status === "completed" || step.status === "cancelled";
@@ -496,7 +524,10 @@ export function PlanPanel({ conversationId }: { conversationId?: string | null }
                         {t("workbench.plan.unverified")}
                       </span>
                     ) : null}
-                    {exhausted || retryable || blockedDeps.length > 0 || (v2 && (graph || (step.attempts ?? 0) > 0)) ? (
+                    {exhausted ||
+                    retryable ||
+                    blockedDeps.length > 0 ||
+                    (v2 && (graph || (step.attempts ?? 0) > 0)) ? (
                       <PlanStepGraphBadges
                         step={step}
                         stepId={stepId}

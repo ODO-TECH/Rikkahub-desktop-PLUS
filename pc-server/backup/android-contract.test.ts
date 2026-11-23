@@ -12,6 +12,7 @@ import {
   filterMessagePartsForAndroid,
   filterSearchServicesForAndroid,
   filterTtsProvidersForAndroid,
+  PC_ONLY_TTS_PROVIDER_TYPES,
   PC_AVATAR_TYPE_TO_ANDROID,
   rewriteAvatarsInSettings,
   toAndroidPresetMessage,
@@ -161,10 +162,21 @@ describe("filterMessagePartsForAndroid(A-3 loading 过滤 + C3 白名单降级)"
 });
 
 describe("C3:TTS/ASR provider 白名单清洗(旧 APP 多态解码保护)", () => {
-  test("PC 已知的 12 家 TTS 全部透传(当前两端对齐,实际不滤)", () => {
-    const known = ["system", "openai", "gemini", "minimax", "qwen", "groq", "xai", "mimo", "elevenlabs", "step", "fish-audio", "volcengine"]
+  test("PC 已知的 13 家 TTS 全部透传(当前两端对齐,实际不滤)", () => {
+    const known = ["system", "openai", "gemini", "minimax", "qwen", "groq", "xai", "mimo", "elevenlabs", "step", "fish-audio", "volcengine", "deepseek"]
       .map((t) => ({ id: `id-${t}`, type: t, name: t }));
-    expect(filterTtsProvidersForAndroid(known)).toHaveLength(12);
+    expect(filterTtsProvidersForAndroid(known)).toHaveLength(13);
+  });
+
+  test("C3:yukkuri 是 PC-only —— 本地 DLL 能力不跨端,导出时整条滤掉", () => {
+    const out = filterTtsProvidersForAndroid([
+      { id: "a", type: "openai", name: "A" },
+      { id: "b", type: "yukkuri", name: "B", sdkPath: "/home/me/yukkuri-sdk" },
+      { id: "c", type: "system", name: "C" },
+    ]) as Array<{ id: string }>;
+    expect(out.map((p) => p.id)).toEqual(["a", "c"]);
+    // 分类哨兵:它必须在 PC-only 名单里,否则 android-contract-sync 的「二选一」会红
+    expect(PC_ONLY_TTS_PROVIDER_TYPES.has("yukkuri")).toBe(true);
   });
 
   test("TTS:未来 PC 先加的类型被滤掉,且选中 id 重定位到幸存项", () => {

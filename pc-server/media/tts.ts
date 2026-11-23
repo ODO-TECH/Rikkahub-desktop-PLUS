@@ -160,6 +160,34 @@ export function defaultTtsProvider(type: TtsProvider["type"] = "system"): TtsPro
       speechRate: 0,
     };
   }
+  if (type === "deepseek") {
+    // 与安卓 TTSProviderSetting.DeepSeek 同形(字段名逐字一致,备份往返无损):
+    // 只有 baseUrl 与 voiceId,官方没有模型名/语速/语种参数。
+    return {
+      type,
+      id: id(),
+      name: "DeepSeek TTS",
+      apiKey: "",
+      baseUrl: "https://api.deepseek.com",
+      voiceId: "stella",
+    };
+  }
+  if (type === "yukkuri") {
+    // 桌面端本地油库里(AquesTalk):不联网、不要 key,靠用户自己放好的 SDK 目录。
+    // voice 既收预设名(f1…r2)也收角色 id(reimu/marisa/cirno);emotion 见 yukkuri/voices。
+    return {
+      type,
+      id: id(),
+      name: "Yukkuri TTS",
+      apiKey: "",
+      baseUrl: "",
+      voice: "f1",
+      emotion: "neutral",
+      speed: 1,
+      pitch: 1,
+      sdkPath: "",
+    };
+  }
   return {
     type: "system",
     id: DEFAULT_SYSTEM_TTS_ID,
@@ -262,6 +290,17 @@ function selectedTtsProvider(providerId?: string) {
     ?? null;
 }
 
+/**
+ * 启动期预热:只有当用户配了油库里声源时才碰 koffi/DLL,失败静默(下次真朗读时再报)。
+ * 放在 server.ts 的 ready 之后异步执行,免得首屏多等几十毫秒。
+ */
+export async function warmupYukkuriIfConfigured(): Promise<void> {
+  const provider = state.settings.ttsProviders.find((item) => item.type === "yukkuri");
+  if (!provider) return;
+  const { warmupYukkuri } = await import("./yukkuri");
+  await warmupYukkuri(provider.sdkPath);
+}
+
 export async function generateSpeechWithTtsProvider(text: string, providerId?: string, speedOverride?: number) {
   const provider = selectedTtsProvider(providerId);
   if (!provider) throw new Error("No TTS provider configured");
@@ -283,6 +322,33 @@ export async function generateSpeechWithTtsProvider(text: string, providerId?: s
       responseBody: `${wavBytes.length} bytes audio/wav`,
     });
     return { audio: wavBytes, mime: "audio/wav", provider };
+  }
+  if (provider.type === "yukkuri") {
+    // 本地引擎:koffi 直调 AquesTalk x64 DLL。动态 import —— 没装 koffi 原生件的平台
+    // (Docker/Linux)加载这个模块不该拖垮整个 TTS 路由。
+    const { synthesizeYukkuri } = await import("./yukkuri");
+    const speed = Number.isFinite(speedOverride) && (speedOverride as number) > 0
+      ? (speedOverride as number)
+      : Number(provider.speed ?? 1);
+    const result = await synthesizeYukkuri(text, {
+      sdkPath: provider.sdkPath,
+      voice: provider.voice,
+      emotion: provider.emotion,
+      speed,
+      pitch: Number(provider.pitch ?? 1),
+    });
+    addLog({
+      providerId: provider.id,
+      providerName: provider.name,
+      url: "aquestalk:local",
+      ok: true,
+      status: 200,
+      kind: "provider:tts",
+      durationMs: Date.now() - started,
+      requestBody: text,
+      responseBody: `${result.audio.length} bytes audio/wav（${result.seconds.toFixed(2)}s${result.skipped > 0 ? `，跳过 ${result.skipped} 段` : ""}）`,
+    });
+    return { audio: result.audio, mime: result.mime, provider };
   }
   if (!provider.apiKey.trim()) throw new Error("TTS API Key is empty");
   // 在线 provider 全部走注册表(§4.5):公共骨架(key 校验/120s 超时/addLog/返回包装)在此,

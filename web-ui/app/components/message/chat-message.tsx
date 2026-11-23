@@ -200,12 +200,14 @@ function formatNumber(value: number): string {
 // 传的是模型的**本地 UUID**(不是上游 modelId):后端按 findModel 解析出生效 provider,
 // 再按其 baseUrl 主机查目录 —— 同一个上游模型名在不同服务商下窗口不同,必须能区分,
 // 且 providerOverwrite(按模型改服务商)也只有走 findModel 才展开得到。
-const contextLimitCache = new Map<string, Promise<number | null>>();
+const contextLimitCache = new Map<string, Promise<{ limit: number | null; reserve: number | null }>>();
 type ContextLimitState = {
   modelKey: string;
   limit: number | null | undefined;
+  /** S3:服务端算出的本轮预留(跟模型输出上限走)。undefined = 还没查到, null = 窗口未知。 */
+  reserve: number | null | undefined;
 };
-let sharedContextLimit: ContextLimitState = { modelKey: "", limit: undefined };
+let sharedContextLimit: ContextLimitState = { modelKey: "", limit: undefined, reserve: undefined };
 const contextLimitListeners = new Set<() => void>();
 function notifyContextLimit() {
   for (const listener of contextLimitListeners) listener();
@@ -216,7 +218,7 @@ function ensureContextLimit(modelKey: string) {
   }
   // 切到新模型:分母先回退到 undefined(getNerdStats 回退到 usage.contextLimit 快照),避免
   // 短暂显示上一个模型的 live 值。然后异步取新模型的 limit。
-  sharedContextLimit = { modelKey, limit: undefined };
+  sharedContextLimit = { modelKey, limit: undefined, reserve: undefined };
   notifyContextLimit();
   if (!modelKey) return;
   // 首次查才发请求,后续(含同 tick 其他消息)复用同一 Promise。后端 context-limit 路由
@@ -224,22 +226,20 @@ function ensureContextLimit(modelKey: string) {
   let p = contextLimitCache.get(modelKey);
   if (!p) {
     p = api
-      .get<{ contextLimit: number | null }>(`context-limit?modelId=${encodeURIComponent(modelKey)}`)
-      .then((res) => res.contextLimit ?? null)
-      .catch(() => null);
+      .get<{ contextLimit: number | null; contextReserve?: number | null }>(`context-limit?modelId=${encodeURIComponent(modelKey)}`)
+      .then((res) => ({ limit: res.contextLimit ?? null, reserve: res.contextReserve ?? null }))
+      .catch(() => ({ limit: null, reserve: null }));
     contextLimitCache.set(modelKey, p);
   }
   void p.then((v) => {
     // 结果到达时仍要确认没再切模型,否则会覆盖更新的查询。
     if (sharedContextLimit.modelKey === modelKey) {
-      sharedContextLimit = { ...sharedContextLimit, limit: v };
+      sharedContextLimit = { ...sharedContextLimit, limit: v.limit, reserve: v.reserve };
       notifyContextLimit();
     }
   });
 }
-/** 当前选中模型的最大上下文窗口(模块级单例缓存,首查后同 tick 复用)。
- *  导出给会话页:上下文告警阈值与消息里的进度环必须同一分母。 */
-export function useCurrentContextLimit(): number | null | undefined {
+function useContextLimitField(pick: (state: ContextLimitState) => number | null | undefined) {
   const { currentModelId } = useCurrentModel();
   const modelKey = currentModelId ?? "";
   React.useEffect(() => {
@@ -252,8 +252,18 @@ export function useCurrentContextLimit(): number | null | undefined {
         contextLimitListeners.delete(onStoreChange);
       };
     },
-    () => sharedContextLimit.limit,
+    () => pick(sharedContextLimit),
   );
+}
+/** 当前选中模型的最大上下文窗口(模块级单例缓存,首查后同 tick 复用)。
+ *  导出给会话页:上下文告警阈值与消息里的进度环必须同一分母。 */
+export function useCurrentContextLimit(): number | null | undefined {
+  return useContextLimitField((state) => state.limit);
+}
+/** 当前选中模型的本轮预留量(S3,服务端 reserveTokensFor 算出)。导出给会话页:
+ *  告警阈值必须与后端自动压缩触发线同一个数,不能前端自己写死 16384。 */
+export function useCurrentContextReserve(): number | null | undefined {
+  return useContextLimitField((state) => state.reserve);
 }
 
 // finishedAt 缺失时只有 live(消息正在生成)才允许以"现在"为终点;孤儿消息(进程被杀

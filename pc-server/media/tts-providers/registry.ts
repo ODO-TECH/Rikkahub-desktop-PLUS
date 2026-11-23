@@ -10,8 +10,9 @@
 
 import type { JsonValue, TtsProvider } from "../../foundation/types";
 
-// 仅在线(provider 需要 apiKey + endpoint);system 走 Windows System.Speech,不在此表。
-export type OnlineTtsType = Exclude<TtsProvider["type"], "system">;
+// 仅在线(provider 需要 apiKey + endpoint);"system" 走 Windows System.Speech,
+// "yukkuri" 走 pc-server 进程内的 AquesTalk 本地合成 —— 两者都不在本表里(§4.5)。
+export type OnlineTtsType = Exclude<TtsProvider["type"], "system" | "yukkuri">;
 
 export interface TtsProviderSpec {
   endpoint(p: TtsProvider): string;
@@ -357,11 +358,27 @@ export const TTS_PROVIDER_REGISTRY: Record<OnlineTtsType, TtsProviderSpec> = {
       }),
     mime: () => "audio/mpeg",
   },
+
+  // DeepSeek 官方语音合成(POST /v1/tools/tts),非 OpenAI 兼容格式、整段合成。
+  // 请求 format=pcm(24kHz/16bit/mono 裸流)而不是 wav:服务端边合成边流式返回,wav 头的
+  // 长度字段在流开始时无法确定(拿到的是占位值)——安卓 DeepSeekTTSProvider 同一结论,
+  // 这里按实际字节数自己补头(gemini/mimo 同款做法)。音色只有 stella(女,官方默认)/tide(男),
+  // 没有模型名与语速参数,语种自动识别;filter_markdown 不发(官方默认 true = 朗读前剥
+  // Markdown,正是我们要的行为)。
+  deepseek: {
+    endpoint: (p) => `${trimBase(p.baseUrl)}/v1/tools/tts`,
+    headers: bearer,
+    body: (p, text) => ({ text, voice_id: p.voiceId || "stella", format: "pcm" }),
+    parse: async (_p, response) => pcm16ToWav(await parseWholeBuffer(response), 24000, 1),
+    mime: () => "audio/wav",
+  },
 };
 
 // type 单源:media/tts.ts 的 normalize 与 api/handlers/media.ts 的 detail 路由都消费它,
 // 消灭两处写死的同步债(台账 Global Verify Sync 纪律)。
+// 本地引擎(system / yukkuri)显式列出——它们没有在线 spec,不进注册表。
 export const TTS_PROVIDER_TYPES: readonly TtsProvider["type"][] = [
   "system",
+  "yukkuri",
   ...(Object.keys(TTS_PROVIDER_REGISTRY) as OnlineTtsType[]),
 ];

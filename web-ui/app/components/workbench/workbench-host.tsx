@@ -1,7 +1,16 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { Code2, Folder, FolderTree, ImagePlus, ListChecks, PanelRight, SquareTerminal } from "lucide-react";
+import {
+  Activity,
+  Code2,
+  Folder,
+  FolderTree,
+  ImagePlus,
+  ListChecks,
+  PanelRight,
+  SquareTerminal,
+} from "lucide-react";
 
 import Markdown from "~/components/markdown/markdown";
 import { MediaStudioPanel } from "~/components/media-studio/media-studio-panel";
@@ -10,6 +19,7 @@ import { cn } from "~/lib/utils";
 
 import { getCodePreviewLanguage } from "./code-preview-language";
 import { ConversationFilesPanel } from "./conversation-files-panel";
+import { AgentActivityPanel } from "./agent-activity-panel";
 import { PlanPanel } from "./plan-panel";
 import { SshTerminalPanel } from "./ssh-terminal-panel";
 import { WorkspaceFilesPanel } from "./workspace-files-panel";
@@ -25,7 +35,10 @@ interface WorkbenchHostProps {
 }
 
 interface WorkbenchPanelRenderer {
-  render: (panel: WorkbenchPanel, activeConversationId: string | null | undefined) => React.ReactNode;
+  render: (
+    panel: WorkbenchPanel,
+    activeConversationId: string | null | undefined,
+  ) => React.ReactNode;
 }
 
 function readStringField(payload: Record<string, unknown>, key: string): string {
@@ -33,7 +46,9 @@ function readStringField(payload: Record<string, unknown>, key: string): string 
   return typeof value === "string" ? value : "";
 }
 
-function readOpenTarget(payload: Record<string, unknown>): { path?: string; fileId?: number } | undefined {
+function readOpenTarget(
+  payload: Record<string, unknown>,
+): { path?: string; fileId?: number } | undefined {
   const raw = payload.open;
   if (!raw || typeof raw !== "object") return undefined;
   const open = raw as Record<string, unknown>;
@@ -62,12 +77,15 @@ function ConversationFilesRenderer({
   // payload 对象只在真正 openPanel 时换新;memo 住 open 目标,面板据此区分
   // “又一次深链请求”与“无关重渲染”(如会话文件清单刷新)。
   const open = React.useMemo(() => readOpenTarget(panel.payload), [panel.payload]);
+  // 「文件 / 运行」是同一个工作台面板的两种视图:运行详情不再另开一个侧栏。
+  const view = panel.payload.view === "activity" ? "activity" : "files";
   return (
     <ConversationFilesPanel
       key={conversationId ?? workspaceId ?? "empty"}
       conversationId={conversationId}
       workspaceId={workspaceId}
       open={open}
+      view={view}
     />
   );
 }
@@ -235,6 +253,11 @@ function UnknownPanel({ panel }: { panel: WorkbenchPanel }) {
 }
 
 const PANEL_RENDERERS: Record<string, WorkbenchPanelRenderer> = {
+  "agent-activity": {
+    render: (_panel, activeConversationId) => (
+      <AgentActivityPanel conversationId={activeConversationId} />
+    ),
+  },
   "code-preview": {
     render: (panel) => <CodePreviewPanel panel={panel} />,
   },
@@ -246,7 +269,7 @@ const PANEL_RENDERERS: Record<string, WorkbenchPanelRenderer> = {
   },
   // 计划面板(实验):payload 带 conversationId 时锁那个会话,否则跟随当前聚焦会话——
   // 与文件面板同一口径,换会话不会看见上一个会话的计划。
-  "plan": {
+  plan: {
     render: (panel, activeConversationId) => (
       <PlanPanel
         conversationId={readStringField(panel.payload, "conversationId") || activeConversationId}
@@ -255,7 +278,9 @@ const PANEL_RENDERERS: Record<string, WorkbenchPanelRenderer> = {
   },
   // 工作区文件面板(M3-5,§4.4)——保留旧入口,工作区容器仍可直接打开只读树。
   "workspace-files": {
-    render: (panel) => <WorkspaceFilesPanel workspaceId={readStringField(panel.payload, "workspaceId")} />,
+    render: (panel) => (
+      <WorkspaceFilesPanel workspaceId={readStringField(panel.payload, "workspaceId")} />
+    ),
   },
   // 媒体工作台:输入框入口导入提示词,生成图片/视频后可插入当前会话。
   "media-studio": {
@@ -282,26 +307,37 @@ const TYPE_LABEL_KEYS: Record<string, string> = {
   "code-preview": "workbench.type_labels.code_preview",
   "media-studio": "workbench.type_labels.media_studio",
   "ssh-terminal": "workbench.type_labels.ssh_terminal",
-  "plan": "workbench.type_labels.plan",
+  plan: "workbench.type_labels.plan",
 };
 
-const TYPE_ICONS: Record<string, React.ComponentType<{ className?: string; strokeWidth?: number }>> = {
+const TYPE_ICONS: Record<
+  string,
+  React.ComponentType<{ className?: string; strokeWidth?: number }>
+> = {
+  "agent-activity": Activity,
   "conversation-files": FolderTree,
   "workspace-files": Folder,
   "code-preview": Code2,
   "media-studio": ImagePlus,
   "ssh-terminal": SquareTerminal,
-  "plan": ListChecks,
+  plan: ListChecks,
 };
 
-export function WorkbenchHost({ panel, onClose, className, activeConversationId }: WorkbenchHostProps) {
+export function WorkbenchHost({
+  panel,
+  onClose,
+  className,
+  activeConversationId,
+}: WorkbenchHostProps) {
   const { t } = useTranslation();
   const renderer = PANEL_RENDERERS[panel.type];
   const typeLabelKey = TYPE_LABEL_KEYS[panel.type];
   const TypeIcon = TYPE_ICONS[panel.type] ?? FolderTree;
 
   return (
-    <section className={cn("flex h-full min-h-0 flex-col bg-sidebar text-sidebar-foreground", className)}>
+    <section
+      className={cn("flex h-full min-h-0 flex-col bg-sidebar text-sidebar-foreground", className)}
+    >
       {/* 头部是左栏用户行的左右镜像:左栏「头像+标题 … 收起钮(卡内侧)」,
           这里「关闭钮(卡内侧)… 图标+标题」——关闭钮落在朝中央的一侧,与左栏同构。
           头区同为 p-2 pt-3,内容行同为 px-2.5 py-2.5。不画分隔线:浮起卡片的界由圆角+投影立。 */}
@@ -320,7 +356,11 @@ export function WorkbenchHost({ panel, onClose, className, activeConversationId 
           <div className="min-w-0 text-right">
             <div className="truncate text-sm font-medium leading-none">{panel.title}</div>
             <div className="mt-1 truncate text-muted-foreground text-xs">
-              {typeLabelKey ? t(typeLabelKey) : t("workbench.type_label", { type: panel.type })}
+              {panel.type === "agent-activity"
+                ? "工具与子任务进度"
+                : typeLabelKey
+                  ? t(typeLabelKey)
+                  : t("workbench.type_label", { type: panel.type })}
             </div>
           </div>
           <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[var(--sidebar-module-card-bg)] text-[var(--ds-icon)]">

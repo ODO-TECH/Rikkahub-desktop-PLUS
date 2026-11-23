@@ -1,6 +1,14 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { BookOpenText, FolderTree, Loader2, RefreshCw, SquareTerminal, TriangleAlert, Upload } from "lucide-react";
+import {
+  BookOpenText,
+  FolderTree,
+  Loader2,
+  RefreshCw,
+  SquareTerminal,
+  TriangleAlert,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "~/components/ui/button";
@@ -16,7 +24,7 @@ import { Input } from "~/components/ui/input";
 import { SegmentedTabs } from "~/components/ui/segmented-tabs";
 import { Textarea } from "~/components/ui/textarea";
 import { extractErrorMessage } from "~/lib/error";
-import api, { ApiError } from "~/services/api";
+import api, { ApiError, appendWebAuthQuery } from "~/services/api";
 import { useConversationStore } from "~/stores/conversation-store";
 import { useWorkspaceStore } from "~/stores/workspace-store";
 
@@ -24,6 +32,7 @@ import {
   ancestorDirs,
   baseName,
   formatSize,
+  isTextAttachment,
   parentPath,
   resolveWorkspaceFilePath,
   type ConversationFileItem,
@@ -39,6 +48,7 @@ import {
   loadFileDraft,
   saveFileDraft,
 } from "./conversation-file-drafts";
+import { AgentActivityPanel } from "./agent-activity-panel";
 import { FileSourceList } from "./file-source-list";
 import { FileTabs } from "./file-tabs";
 import { FileViewer } from "./file-viewer";
@@ -67,6 +77,9 @@ import { useOptionalWorkbench } from "./workbench-context";
 
 type Source = "changes" | "files" | "attachments" | "outputs";
 
+// 文本类附件按需读前 512KB(与服务端工作区预览同口径),避免把超大日志整个拉进内存。
+const TEXT_ATTACHMENT_PREVIEW_LIMIT = 512 * 1024;
+
 interface AgentsFileState {
   fileName: string;
   exists: boolean;
@@ -80,9 +93,16 @@ interface ConversationFilesPanelProps {
   conversationId?: string;
   workspaceId?: string;
   open?: { path?: string; fileId?: number };
+  /** 同一侧栏的顶层视图:文件(改动/树/附件/产出)或运行(工具调用/子任务)。 */
+  view?: "files" | "activity";
 }
 
-function emptyView(key: string, title: string, path: string | null, kind: "workspace" | "media"): OpenFileView {
+function emptyView(
+  key: string,
+  title: string,
+  path: string | null,
+  kind: "workspace" | "media",
+): OpenFileView {
   return {
     key,
     kind,
@@ -104,15 +124,22 @@ function editBlockedText(
   edit: WorkspaceFileEditInfo,
   t: (key: string, options?: Record<string, unknown>) => string,
 ): string {
-  if (edit.reason === "too_large") return t("workbench.files.not_editable_too_large", { limit: formatSize(edit.limitBytes) });
+  if (edit.reason === "too_large")
+    return t("workbench.files.not_editable_too_large", { limit: formatSize(edit.limitBytes) });
   if (edit.reason === "binary") return t("workbench.files.not_editable_binary");
   return t("workbench.files.not_editable_image");
 }
 
-export function ConversationFilesPanel({ conversationId, workspaceId, open }: ConversationFilesPanelProps) {
+export function ConversationFilesPanel({
+  conversationId,
+  workspaceId,
+  open,
+  view = "files",
+}: ConversationFilesPanelProps) {
   const { t } = useTranslation();
   const workbench = useOptionalWorkbench();
-  const [conversationFiles, setConversationFiles] = React.useState<ConversationFilesResponse | null>(null);
+  const [conversationFiles, setConversationFiles] =
+    React.useState<ConversationFilesResponse | null>(null);
   // 工作区来源:面板显式传入优先;普通对话里由后端按 conversation.workspaceId 解析后回传。
   // 只认 store 里真实存在的工作区——被删掉的工作区不该给出可编辑的文件树。
   const resolvedWorkspaceId = workspaceId ?? conversationFiles?.workspaceId ?? undefined;
@@ -125,20 +152,31 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
   const capabilities = capabilitiesOf(fileSource);
   const isRemote = fileSource?.kind === "remote";
   const [loadingConversationFiles, setLoadingConversationFiles] = React.useState(false);
-  const [source, setSource] = React.useState<Source>(open?.path ? "files" : isRemote ? "files" : "changes");
+  const [source, setSource] = React.useState<Source>(
+    open?.path ? "files" : isRemote ? "files" : "changes",
+  );
   const [tree, setTree] = React.useState<Record<string, WorkspaceFileEntry[] | undefined>>({});
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set([""]));
   const [files, setFiles] = React.useState<OpenFileView[]>([]);
   const [activeKey, setActiveKey] = React.useState<string | null>(null);
-  const [renameTarget, setRenameTarget] = React.useState<{ path: string; name: string } | null>(null);
-  const [deleteTarget, setDeleteTarget] = React.useState<{ path: string; isDir: boolean } | null>(null);
+  const [renameTarget, setRenameTarget] = React.useState<{ path: string; name: string } | null>(
+    null,
+  );
+  const [deleteTarget, setDeleteTarget] = React.useState<{ path: string; isDir: boolean } | null>(
+    null,
+  );
   // 上传目标目录(相对授权目录):null=未选文件。远程专属,本地没有这条路由。
   const [uploadTarget, setUploadTarget] = React.useState<string | null>(null);
   const uploadInputRef = React.useRef<HTMLInputElement | null>(null);
-  const [agentsDialog, setAgentsDialog] = React.useState<{ data: AgentsFileState | null } | null>(null);
+  const [agentsDialog, setAgentsDialog] = React.useState<{ data: AgentsFileState | null } | null>(
+    null,
+  );
   const [agentsDraft, setAgentsDraft] = React.useState("");
   const [agentsSaving, setAgentsSaving] = React.useState(false);
-  const [pendingDiscard, setPendingDiscard] = React.useState<{ key: string; action: DiscardAction } | null>(null);
+  const [pendingDiscard, setPendingDiscard] = React.useState<{
+    key: string;
+    action: DiscardAction;
+  } | null>(null);
   const filesRef = React.useRef<OpenFileView[]>([]);
   filesRef.current = files;
   // 深链目标按 payload 对象身份消费:openPanel 每次都会换新 payload,借此区分
@@ -150,7 +188,9 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
   React.useEffect(() => {
     if (!workbench?.setCloseGuard) return;
     workbench.setCloseGuard(() => {
-      const victim = filesRef.current.find((view) => view.draft !== null && view.draft !== view.savedText);
+      const victim = filesRef.current.find(
+        (view) => view.draft !== null && view.draft !== view.savedText,
+      );
       if (!victim) return true;
       setActiveKey(victim.key);
       setPendingDiscard({ key: victim.key, action: "close-panel" });
@@ -176,9 +216,70 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
     if (count > 0) toast.info(t("workbench.files.drafts_kept", { count }));
   }, [draftScope, t]);
 
-  const updateFile = React.useCallback((key: string, patch: Partial<OpenFileView> | ((view: OpenFileView) => Partial<OpenFileView>)) => {
-    setFiles((prev) => prev.map((view) => (view.key === key ? { ...view, ...(typeof patch === "function" ? patch(view) : patch) } : view)));
-  }, []);
+  const updateFile = React.useCallback(
+    (
+      key: string,
+      patch: Partial<OpenFileView> | ((view: OpenFileView) => Partial<OpenFileView>),
+    ) => {
+      setFiles((prev) =>
+        prev.map((view) =>
+          view.key === key
+            ? { ...view, ...(typeof patch === "function" ? patch(view) : patch) }
+            : view,
+        ),
+      );
+    },
+    [],
+  );
+
+  /** 文本类附件:走 /api/files/<id>/content 读原文,交给 FileViewer 的文本/Markdown
+   *  渲染路径。此前一律按「媒体」打开,Markdown 附件只能看到「无法在侧边栏预览」。 */
+  const loadTextAttachment = React.useCallback(
+    async (item: ConversationFileItem, key: string) => {
+      try {
+        // Range 头让服务端只回前 512KB(支持 206);不支持时退回整段再本地截断。
+        const response = await fetch(appendWebAuthQuery(item.url), {
+          headers: { Range: `bytes=0-${TEXT_ATTACHMENT_PREVIEW_LIMIT - 1}` },
+        });
+        if (!response.ok && response.status !== 206) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const raw = await response.text();
+        const text =
+          raw.length > TEXT_ATTACHMENT_PREVIEW_LIMIT
+            ? raw.slice(0, TEXT_ATTACHMENT_PREVIEW_LIMIT)
+            : raw;
+        const range = response.headers.get("content-range");
+        const totalFromRange = range ? Number(range.split("/")[1]) : NaN;
+        const contentLength = Number(response.headers.get("content-length") ?? "");
+        const size =
+          Number.isFinite(totalFromRange) && totalFromRange > 0
+            ? totalFromRange
+            : Number.isFinite(contentLength) && contentLength > 0
+              ? contentLength
+              : (item.size ?? raw.length);
+        updateFile(key, {
+          loading: false,
+          preview: {
+            kind: "text",
+            text,
+            truncated:
+              raw.length >= TEXT_ATTACHMENT_PREVIEW_LIMIT || size > TEXT_ATTACHMENT_PREVIEW_LIMIT,
+            size,
+          },
+          error: null,
+        });
+      } catch (err) {
+        // 读取失败时退回媒体视图(至少保留「在浏览器中打开」的退路)。
+        updateFile(key, {
+          loading: false,
+          preview: { kind: "media", url: item.url, mime: item.mime, size: item.size },
+          error: extractErrorMessage(err, t("workbench.files.failed")),
+        });
+      }
+    },
+    [t, updateFile],
+  );
 
   // ── 会话文件清单(改动/附件/产出)──────────────────────────────
   const refreshConversationFiles = React.useCallback(async () => {
@@ -275,7 +376,10 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
           conflict: false,
         });
       } catch (err) {
-        updateFile(view.key, { loading: false, error: extractErrorMessage(err, t("workbench.files.failed")) });
+        updateFile(view.key, {
+          loading: false,
+          error: extractErrorMessage(err, t("workbench.files.failed")),
+        });
       }
     },
     [fileSource, t, updateFile],
@@ -308,13 +412,20 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
         });
         if (draftScope) {
           if (restoring) {
-            saveFileDraft(draftScope, view.path, { text: stored.text, savedText: diskText, etag: res.edit.etag });
+            saveFileDraft(draftScope, view.path, {
+              text: stored.text,
+              savedText: diskText,
+              etag: res.edit.etag,
+            });
           } else {
             clearFileDraft(draftScope, view.path);
           }
         }
       } catch (err) {
-        updateFile(view.key, { loading: false, error: extractErrorMessage(err, t("workbench.files.failed")) });
+        updateFile(view.key, {
+          loading: false,
+          error: extractErrorMessage(err, t("workbench.files.failed")),
+        });
       }
     },
     [draftScope, fileSource, t, updateFile],
@@ -324,7 +435,11 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
     (relPath: string) => {
       const key = `ws:${relPath}`;
       const existing = filesRef.current.find((item) => item.key === key);
-      setFiles((prev) => (prev.some((item) => item.key === key) ? prev : [...prev, emptyView(key, baseName(relPath), relPath, "workspace")]));
+      setFiles((prev) =>
+        prev.some((item) => item.key === key)
+          ? prev
+          : [...prev, emptyView(key, baseName(relPath), relPath, "workspace")],
+      );
       setActiveKey(key);
       setExpanded((prev) => new Set([...prev, ...ancestorDirs(relPath)]));
       for (const dir of ancestorDirs(relPath)) {
@@ -340,22 +455,32 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
     [draftScope, fetchPreview, loadDir, startEdit, tree],
   );
 
-  const openMedia = React.useCallback((item: ConversationFileItem) => {
-    const key = `media:${item.id}`;
-    setFiles((prev) => {
-      if (prev.some((view) => view.key === key)) return prev;
-      return [
-        ...prev,
-        {
-          ...emptyView(key, item.fileName, null, "media"),
-          loading: false,
-          preview: { kind: "media", url: item.url, mime: item.mime, size: item.size },
-        },
-      ];
-    });
-    setActiveKey(key);
-    setSource(item.kind === "attachment" ? "attachments" : "outputs");
-  }, []);
+  const openMedia = React.useCallback(
+    (item: ConversationFileItem) => {
+      const key = `media:${item.id}`;
+      // 文本类附件(尤其 Markdown)不再一律当媒体:能读出原文就渲染正文,
+      // HTML/源码同样复用 FileViewer 的沙箱预览与高亮。
+      const textLike = isTextAttachment(item.fileName, item.mime);
+      const existing = filesRef.current.some((view) => view.key === key);
+      setFiles((prev) => {
+        if (prev.some((view) => view.key === key)) return prev;
+        return [
+          ...prev,
+          {
+            ...emptyView(key, item.fileName, null, "media"),
+            loading: textLike,
+            preview: textLike
+              ? null
+              : { kind: "media", url: item.url, mime: item.mime, size: item.size },
+          },
+        ];
+      });
+      setActiveKey(key);
+      setSource(item.kind === "attachment" ? "attachments" : "outputs");
+      if (textLike && !existing) void loadTextAttachment(item, key);
+    },
+    [loadTextAttachment],
+  );
 
   // 外部入口(从消息 chip / 工具卡 / 改动列表跳转):每个 open 目标消费一次。
   // 面板已开着时再次深链会换新 payload → 新 open 身份 → 这里重新消费,
@@ -368,7 +493,11 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
       // 首次还没拿到清单时先等,避免把 "src/a.ts" 当成工作区根相对路径。
       if (!workspace || !conversationFiles) return;
       consumedOpenRef.current = open;
-      const resolved = resolveWorkspaceFilePath(open.path, conversationFiles.cwd, conversationFiles.workspaceRoot);
+      const resolved = resolveWorkspaceFilePath(
+        open.path,
+        conversationFiles.cwd,
+        conversationFiles.workspaceRoot,
+      );
       if (resolved === null) {
         toast.error(t("workbench.files.outside_workspace"));
         return;
@@ -399,7 +528,13 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
           baseEtag = latest.edit.etag;
         }
         const content = view.draft;
-        const res = await saveText(fileSource, view.path, content, baseEtag, view.edit?.eol ?? "\n");
+        const res = await saveText(
+          fileSource,
+          view.path,
+          content,
+          baseEtag,
+          view.edit?.eol ?? "\n",
+        );
         updateFile(key, {
           draft: null,
           savedText: content,
@@ -416,7 +551,10 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
           updateFile(key, { saving: false, conflict: true });
           return;
         }
-        updateFile(key, { saving: false, error: extractErrorMessage(err, t("workbench.files.failed")) });
+        updateFile(key, {
+          saving: false,
+          error: extractErrorMessage(err, t("workbench.files.failed")),
+        });
         toast.error(extractErrorMessage(err, t("workbench.files.failed")));
       }
     },
@@ -431,7 +569,11 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
       clearFileDraft(draftScope, view.path);
       return;
     }
-    saveFileDraft(draftScope, view.path, { text, savedText: view.savedText, etag: view.edit?.etag ?? null });
+    saveFileDraft(draftScope, view.path, {
+      text,
+      savedText: view.savedText,
+      etag: view.edit?.etag ?? null,
+    });
   };
 
   const isDirty = (view: OpenFileView) => view.draft !== null && view.draft !== view.savedText;
@@ -499,7 +641,10 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
   const closeWorkspaceTabs = (relPath: string) => {
     const removed = new Set(
       filesRef.current
-        .filter((view) => view.path === relPath || (view.path !== null && view.path.startsWith(`${relPath}/`)))
+        .filter(
+          (view) =>
+            view.path === relPath || (view.path !== null && view.path.startsWith(`${relPath}/`)),
+        )
         .map((view) => view.key),
     );
     if (removed.size === 0) return;
@@ -510,13 +655,22 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
 
   const doRename = async (newName: string) => {
     // 改名只有本地有:SFTP 层没实现远端重命名(能力表把它关掉了,这里再兜一道)。
-    if (!renameTarget || !effectiveWorkspaceId || !capabilities.rename || !newName.trim() || newName === renameTarget.name) {
+    if (
+      !renameTarget ||
+      !effectiveWorkspaceId ||
+      !capabilities.rename ||
+      !newName.trim() ||
+      newName === renameTarget.name
+    ) {
       setRenameTarget(null);
       return;
     }
     const target = renameTarget;
     try {
-      await api.post(`workspaces/${effectiveWorkspaceId}/files/rename`, { path: target.path, newName: newName.trim() });
+      await api.post(`workspaces/${effectiveWorkspaceId}/files/rename`, {
+        path: target.path,
+        newName: newName.trim(),
+      });
       closeWorkspaceTabs(target.path);
       reloadParentOf(target.path);
     } catch (err) {
@@ -607,7 +761,9 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
     if (!effectiveWorkspaceId || !capabilities.agents) return;
     setAgentsDialog({ data: null });
     try {
-      const res = await api.get<{ agentsFile: AgentsFileState }>(`workspaces/${effectiveWorkspaceId}/agents-file`);
+      const res = await api.get<{ agentsFile: AgentsFileState }>(
+        `workspaces/${effectiveWorkspaceId}/agents-file`,
+      );
       setAgentsDialog((current) => (current ? { data: res.agentsFile } : current));
       setAgentsDraft(res.agentsFile.exists ? res.agentsFile.content : res.agentsFile.template);
     } catch (err) {
@@ -637,8 +793,8 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
   // 同一屏里既能浏览本机目录也能浏览远端目录,不写出身份就分不清在动哪台机器(它不含凭据)。
   const rootLabel = fileSource
     ? isRemote
-      ? [(workspace?.sshTarget ?? ""), workspace?.root ?? ""].filter(Boolean).join(" · ")
-      : workspace?.root ?? ""
+      ? [workspace?.sshTarget ?? "", workspace?.root ?? ""].filter(Boolean).join(" · ")
+      : (workspace?.root ?? "")
     : "";
   const bindingBroken = workspace?.type === "ssh" && !fileSource;
 
@@ -648,10 +804,21 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
       // 于是整个不出现(而不是给一屏注定为空的列表)。
       ...(isRemote || !conversationId
         ? []
-        : [{ value: "changes" as const, label: `${t("workbench.files.tab_changes")}${conversationFiles ? ` ${conversationFiles.changes.length}` : ""}` }]),
+        : [
+            {
+              value: "changes" as const,
+              label: `${t("workbench.files.tab_changes")}${conversationFiles ? ` ${conversationFiles.changes.length}` : ""}`,
+            },
+          ]),
       ...(fileSource ? [{ value: "files" as const, label: t("workbench.files.tab_files") }] : []),
-      { value: "attachments" as const, label: `${t("workbench.files.tab_attachments")}${conversationFiles ? ` ${conversationFiles.files.filter((item) => item.kind === "attachment").length}` : ""}` },
-      { value: "outputs" as const, label: `${t("workbench.files.tab_outputs")}${conversationFiles ? ` ${conversationFiles.files.filter((item) => item.kind === "output").length}` : ""}` },
+      {
+        value: "attachments" as const,
+        label: `${t("workbench.files.tab_attachments")}${conversationFiles ? ` ${conversationFiles.files.filter((item) => item.kind === "attachment").length}` : ""}`,
+      },
+      {
+        value: "outputs" as const,
+        label: `${t("workbench.files.tab_outputs")}${conversationFiles ? ` ${conversationFiles.files.filter((item) => item.kind === "output").length}` : ""}`,
+      },
     ];
     return items;
   }, [conversationFiles, conversationId, fileSource, isRemote, t]);
@@ -659,7 +826,8 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
   React.useEffect(() => {
     // 来源列表随工作区类型/会话有无而变(远程没有「本次改动」、绑定断了没有「工作区」),
     // 落点不在表里就回到第一项——比逐条特判每个 tab 的消失条件稳。
-    if (!sourceItems.some((item) => item.value === source)) setSource(sourceItems[0]?.value ?? "changes");
+    if (!sourceItems.some((item) => item.value === source))
+      setSource(sourceItems[0]?.value ?? "changes");
   }, [source, sourceItems]);
 
   const refreshAll = () => {
@@ -671,154 +839,199 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
     }
   };
 
+  // 顶部「文件 / 运行」:复用同一面板 payload,只换 view;同时清掉深链目标,
+  // 否则来回切视图会把已经消费过的 open 目标重新拉出来一次。
+  const switchView = React.useCallback(
+    (next: "files" | "activity") => {
+      const current = workbench?.panel;
+      if (!current || current.type !== "conversation-files") return;
+      const payload = { ...current.payload };
+      delete payload.open;
+      workbench.openPanel({ ...current, payload: { ...payload, view: next } });
+    },
+    [workbench],
+  );
+
   // 首页直接点顶栏开关也会走到这里:没有会话就没有“改动/附件/产出”,没有工作区就没有
   // 文件树。给一屏说明代替一句“请先打开会话”,用户知道文件从哪里来。
-  if (!conversationId && !effectiveWorkspaceId) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-        <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-          <FolderTree className="size-5 text-muted-foreground" strokeWidth={1.75} />
-        </div>
-        <div className="space-y-1">
-          <div className="font-medium text-sm">{t("workbench.files.empty_title")}</div>
-          <p className="mx-auto max-w-56 text-muted-foreground text-xs leading-5">
-            {t("workbench.files.empty_desc")}
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const noBrowseTarget = !conversationId && !effectiveWorkspaceId;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* 顶层视图:文件 / 运行。运行详情不再另开一个侧栏——与文件共用同一张
+          工作台卡片,打开「运行」不会把文件页的内容/草稿丢掉。 */}
       <div className="flex items-center gap-1.5 border-b px-2 py-1.5">
         <SegmentedTabs
-          items={sourceItems}
-          value={source}
-          onChange={(next) => {
-            setSource(next);
-            // 切换来源即回到该来源的列表:已打开的文件留在标签条里(草稿不丢),
-            // 否则用户点了“附件 / 产出”却仍停在上一个文件的预览上,像是没响应。
-            setActiveKey(null);
-            if (next === "files" && tree[""] === undefined) void loadDir("");
-          }}
+          aria-label={t("workbench.views.aria")}
+          items={[
+            { value: "files", label: t("workbench.views.files") },
+            { value: "activity", label: t("workbench.views.activity") },
+          ]}
+          value={view}
+          onChange={switchView}
           size="sm"
           className="min-w-0"
         />
-        <div className="ml-auto flex shrink-0 items-center">
-          {source === "files" && capabilities.upload ? (
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("workbench.files.upload")}
-              title={t("workbench.files.upload")}
-              onClick={() => pickUpload("")}
-            >
-              <Upload className="size-3.5" />
-            </Button>
-          ) : null}
-          {source === "files" && capabilities.terminal ? (
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("workbench.terminal.open")}
-              title={t("workbench.terminal.open")}
-              onClick={openTerminal}
-            >
-              <SquareTerminal className="size-3.5" />
-            </Button>
-          ) : null}
-          {source === "files" && effectiveWorkspaceId && capabilities.agents ? (
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("workbench.files.agents_edit")}
-              title={t("workbench.files.agents_edit")}
-              onClick={() => void openAgentsDialog()}
-            >
-              <BookOpenText className="size-3.5" />
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            aria-label={t("workbench.files.refresh")}
-            title={t("workbench.files.refresh")}
-            onClick={refreshAll}
-          >
-            {loadingConversationFiles ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-          </Button>
-        </div>
       </div>
 
-      {/* 绑定断了(设备或授权目录已不在):文件树没有可浏览的对象,说清楚为什么,
+      {view === "activity" ? (
+        <div className="min-h-0 flex-1">
+          <AgentActivityPanel conversationId={conversationId} />
+        </div>
+      ) : noBrowseTarget ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <div className="flex size-10 items-center justify-center rounded-full bg-muted">
+            <FolderTree className="size-5 text-muted-foreground" strokeWidth={1.75} />
+          </div>
+          <div className="space-y-1">
+            <div className="font-medium text-sm">{t("workbench.files.empty_title")}</div>
+            <p className="mx-auto max-w-56 text-muted-foreground text-xs leading-5">
+              {t("workbench.files.empty_desc")}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5 border-b px-2 py-1.5">
+            <SegmentedTabs
+              items={sourceItems}
+              value={source}
+              onChange={(next) => {
+                setSource(next);
+                // 切换来源即回到该来源的列表:已打开的文件留在标签条里(草稿不丢),
+                // 否则用户点了“附件 / 产出”却仍停在上一个文件的预览上,像是没响应。
+                setActiveKey(null);
+                if (next === "files" && tree[""] === undefined) void loadDir("");
+              }}
+              size="sm"
+              className="min-w-0"
+            />
+            <div className="ml-auto flex shrink-0 items-center">
+              {source === "files" && capabilities.upload ? (
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("workbench.files.upload")}
+                  title={t("workbench.files.upload")}
+                  onClick={() => pickUpload("")}
+                >
+                  <Upload className="size-3.5" />
+                </Button>
+              ) : null}
+              {source === "files" && capabilities.terminal ? (
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("workbench.terminal.open")}
+                  title={t("workbench.terminal.open")}
+                  onClick={openTerminal}
+                >
+                  <SquareTerminal className="size-3.5" />
+                </Button>
+              ) : null}
+              {source === "files" && effectiveWorkspaceId && capabilities.agents ? (
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("workbench.files.agents_edit")}
+                  title={t("workbench.files.agents_edit")}
+                  onClick={() => void openAgentsDialog()}
+                >
+                  <BookOpenText className="size-3.5" />
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label={t("workbench.files.refresh")}
+                title={t("workbench.files.refresh")}
+                onClick={refreshAll}
+              >
+                {loadingConversationFiles ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-3.5" />
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {/* 绑定断了(设备或授权目录已不在):文件树没有可浏览的对象,说清楚为什么,
           而不是留一屏看似「目录为空」的空白。 */}
-      {bindingBroken ? (
-        <div className="flex items-start gap-2 border-b bg-warning/10 px-3 py-2 text-warning text-xs">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} />
-          <span className="min-w-0 flex-1 leading-5">{t("workbench.files.ssh_binding_missing")}</span>
-        </div>
-      ) : null}
+          {bindingBroken ? (
+            <div className="flex items-start gap-2 border-b bg-warning/10 px-3 py-2 text-warning text-xs">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} />
+              <span className="min-w-0 flex-1 leading-5">
+                {t("workbench.files.ssh_binding_missing")}
+              </span>
+            </div>
+          ) : null}
 
-      {files.length > 0 ? (
-        <FileTabs
-          tabs={files.map((view) => ({ key: view.key, title: view.title, dirty: isDirty(view) }))}
-          activeKey={activeKey}
-          onSelect={setActiveKey}
-          onClose={closeTab}
-          onBack={() => setActiveKey(null)}
-        />
-      ) : null}
+          {files.length > 0 ? (
+            <FileTabs
+              tabs={files.map((view) => ({
+                key: view.key,
+                title: view.title,
+                dirty: isDirty(view),
+              }))}
+              activeKey={activeKey}
+              onSelect={setActiveKey}
+              onClose={closeTab}
+              onBack={() => setActiveKey(null)}
+            />
+          ) : null}
 
-      <div className="min-h-0 flex-1">
-        {activeFile ? (
-          <FileViewer
-            file={activeFile}
-            source={fileSource}
-            canReveal={capabilities.reveal}
-            canDownload={capabilities.download}
-            onStartEdit={() => void startEdit(activeFile)}
-            onCancelEdit={() => requestDiscard(activeFile.key, "cancel-edit")}
-            onDraftChange={(text) => changeDraft(activeFile, text)}
-            onSave={() => void saveFile(activeFile.key)}
-            onReload={() => reloadFile(activeFile.key)}
-            onOverwrite={() => void saveFile(activeFile.key, { force: true })}
-            onReveal={() => {
-              if (activeFile.path) void doReveal(activeFile.path);
-            }}
-            onDownload={() => {
-              if (activeFile.path) doDownload(activeFile.path);
-            }}
-          />
-        ) : (
-          <FileSourceList
-            source={source}
-            workspaceRoot={rootLabel}
-            capabilities={capabilities}
-            conversationFiles={conversationFiles}
-            loading={loadingConversationFiles}
-            tree={tree}
-            expanded={expanded}
-            onToggleDir={toggleDir}
-            onOpenWorkspaceFile={openWorkspaceFile}
-            onOpenMedia={openMedia}
-            onRequestRename={(path, name) => setRenameTarget({ path, name })}
-            onRequestDelete={(path, isDir) => setDeleteTarget({ path, isDir })}
-            onRequestUpload={(path) => pickUpload(path)}
-            onDownload={(path) => doDownload(path)}
-            onReveal={(path) => void doReveal(path)}
-            onRefresh={() => {
-              setTree({});
-              setExpanded(new Set([""]));
-              void loadDir("");
-            }}
-          />
-        )}
-      </div>
+          <div className="min-h-0 flex-1">
+            {activeFile ? (
+              <FileViewer
+                file={activeFile}
+                source={fileSource}
+                canReveal={capabilities.reveal}
+                canDownload={capabilities.download}
+                onStartEdit={() => void startEdit(activeFile)}
+                onCancelEdit={() => requestDiscard(activeFile.key, "cancel-edit")}
+                onDraftChange={(text) => changeDraft(activeFile, text)}
+                onSave={() => void saveFile(activeFile.key)}
+                onReload={() => reloadFile(activeFile.key)}
+                onOverwrite={() => void saveFile(activeFile.key, { force: true })}
+                onReveal={() => {
+                  if (activeFile.path) void doReveal(activeFile.path);
+                }}
+                onDownload={() => {
+                  if (activeFile.path) doDownload(activeFile.path);
+                }}
+              />
+            ) : (
+              <FileSourceList
+                source={source}
+                workspaceRoot={rootLabel}
+                capabilities={capabilities}
+                conversationFiles={conversationFiles}
+                loading={loadingConversationFiles}
+                tree={tree}
+                expanded={expanded}
+                onToggleDir={toggleDir}
+                onOpenWorkspaceFile={openWorkspaceFile}
+                onOpenMedia={openMedia}
+                onRequestRename={(path, name) => setRenameTarget({ path, name })}
+                onRequestDelete={(path, isDir) => setDeleteTarget({ path, isDir })}
+                onRequestUpload={(path) => pickUpload(path)}
+                onDownload={(path) => doDownload(path)}
+                onReveal={(path) => void doReveal(path)}
+                onRefresh={() => {
+                  setTree({});
+                  setExpanded(new Set([""]));
+                  void loadDir("");
+                }}
+              />
+            )}
+          </div>
+        </>
+      )}
 
       {/* 上传用的隐藏 input:远程工作区没有本机文件管理器,上传入口只能落在浏览器的文件选择框上。
           每次选完重置 value,同一个文件连点两次也能再次触发(不重置就只有一次 change)。 */}
@@ -833,7 +1046,12 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
         }}
       />
 
-      <Dialog open={pendingDiscard !== null} onOpenChange={(isOpen) => { if (!isOpen) setPendingDiscard(null); }}>
+      <Dialog
+        open={pendingDiscard !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setPendingDiscard(null);
+        }}
+      >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>{t("workbench.files.discard_title")}</DialogTitle>
@@ -859,7 +1077,12 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
         </DialogContent>
       </Dialog>
 
-      <Dialog open={renameTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setRenameTarget(null); }}>
+      <Dialog
+        open={renameTarget !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setRenameTarget(null);
+        }}
+      >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>{t("workbench.files.rename")}</DialogTitle>
@@ -872,17 +1095,28 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
           >
             <Input name="name" defaultValue={renameTarget?.name ?? ""} autoFocus />
             <DialogFooter className="mt-4">
-              <Button type="button" variant="ghost" onClick={() => setRenameTarget(null)}>{t("workbench.files.cancel")}</Button>
+              <Button type="button" variant="ghost" onClick={() => setRenameTarget(null)}>
+                {t("workbench.files.cancel")}
+              </Button>
               <Button type="submit">{t("workbench.files.confirm")}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={agentsDialog !== null} onOpenChange={(isOpen) => { if (!isOpen) setAgentsDialog(null); }}>
+      <Dialog
+        open={agentsDialog !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setAgentsDialog(null);
+        }}
+      >
         <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{t("workbench.files.agents_dialog_title", { name: agentsDialog?.data?.fileName ?? "AGENTS.md" })}</DialogTitle>
+            <DialogTitle>
+              {t("workbench.files.agents_dialog_title", {
+                name: agentsDialog?.data?.fileName ?? "AGENTS.md",
+              })}
+            </DialogTitle>
             <DialogDescription>
               {agentsDialog?.data && !agentsDialog.data.exists
                 ? t("workbench.files.agents_dialog_create_hint")
@@ -902,8 +1136,14 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
             />
           )}
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setAgentsDialog(null)}>{t("workbench.files.cancel")}</Button>
-            <Button type="button" disabled={agentsSaving || !agentsDialog?.data} onClick={() => void saveAgentsFile()}>
+            <Button type="button" variant="ghost" onClick={() => setAgentsDialog(null)}>
+              {t("workbench.files.cancel")}
+            </Button>
+            <Button
+              type="button"
+              disabled={agentsSaving || !agentsDialog?.data}
+              onClick={() => void saveAgentsFile()}
+            >
               {agentsSaving ? <Loader2 className="size-3.5 animate-spin" /> : null}
               {t("workbench.files.agents_save")}
             </Button>
@@ -911,19 +1151,33 @@ export function ConversationFilesPanel({ conversationId, workspaceId, open }: Co
         </DialogContent>
       </Dialog>
 
-      <Dialog open={deleteTarget !== null} onOpenChange={(isOpen) => { if (!isOpen) setDeleteTarget(null); }}>
+      <Dialog
+        open={deleteTarget !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setDeleteTarget(null);
+        }}
+      >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>{t("workbench.files.delete")}</DialogTitle>
             <DialogDescription>
-              {t(deleteTarget?.isDir ? "workbench.files.delete_dir_confirm" : "workbench.files.delete_file_confirm", {
-                name: deleteTarget?.path ?? "",
-              })}
+              {t(
+                deleteTarget?.isDir
+                  ? "workbench.files.delete_dir_confirm"
+                  : "workbench.files.delete_file_confirm",
+                {
+                  name: deleteTarget?.path ?? "",
+                },
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setDeleteTarget(null)}>{t("workbench.files.cancel")}</Button>
-            <Button type="button" variant="destructive" onClick={() => void doDelete()}>{t("workbench.files.delete")}</Button>
+            <Button type="button" variant="ghost" onClick={() => setDeleteTarget(null)}>
+              {t("workbench.files.cancel")}
+            </Button>
+            <Button type="button" variant="destructive" onClick={() => void doDelete()}>
+              {t("workbench.files.delete")}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

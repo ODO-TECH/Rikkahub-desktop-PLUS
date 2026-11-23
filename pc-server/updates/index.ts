@@ -11,7 +11,7 @@ import type { GithubRelease } from "../foundation/types";
 // 更新检查的发布通道。必须指向**本仓库**：上游 Releases 的包不含本分支任何改动，
 // 一旦被当成「新版本」下载并覆盖安装，SQLite 活库 / stdio MCP / WebView2 壳会被整体
 // 换回上游形态，这是本分支最容易自伤的地方。写成常量并由 update-channel.test.ts 钉死。
-export const UPDATE_REPO = "ODO-TECH/Rikkahub-desktoPLUS";
+export const UPDATE_REPO = "ODO-TECH/Rikkahub-desktop-PLUS";
 
 // 可选的下载镜像（Cloudflare R2 公共桶）。留空 = 不使用镜像，一律走 GitHub Release
 // 资产直链。上游的 R2 桶只能取到上游的安装包，绝不能指向它。
@@ -65,7 +65,7 @@ export function writeSkippedVersion(version: string) {
 // 一次同步本处 + tauri.conf.json + Cargo.toml + web-ui/app/lib/app-version.ts；
 // 请勿手改单处（CI 的 check-version-sync.ts 会红灯）。更新检查用本值对比 GitHub
 // release tag；界面版本比本值新时（后端进程未重启）update/check 以界面版本为准。
-export const APP_VERSION = "0.1.6";
+export const APP_VERSION = "0.2.0";
 
 // GitHub 出站统一入口:证书校验失败(本机 HTTPS 被加速 / 代理工具接管)时改用系统根证书
 // 重试一次。见 foundation/tls-trust.ts。

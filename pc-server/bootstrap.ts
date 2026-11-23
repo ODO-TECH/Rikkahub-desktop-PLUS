@@ -10,10 +10,11 @@
 // 拿到端口并导航,只会看到一扇死窗口。
 
 import { applyEffectiveProxy, installProxyFetchInterceptor, primeSystemProxyCache } from "./foundation/net";
-import { installLlmRequestLogInterceptor } from "./pi-engine/llm-request-log";
+import { installLlmRequestLogInterceptor } from "./inference-engine/llm-request-log";
 import { setStartupPhase } from "./foundation/startup-gate";
 import { saveState, setState, state } from "./persistence/json-store";
 import { loadState } from "./persistence/state-load";
+import { startAlphaDemo } from "./kernel-engine/demo";
 import { getConversationsDb, initConversationsRuntime } from "./conversations";
 import { repairForkNodeTheft } from "./conversations/fork-repair";
 import { reconcileAgentRunsAfterBoot } from "./agent-loop/run-recovery";
@@ -26,6 +27,7 @@ import { resumePendingMediaTasks } from "./media-generation/resume";
 import { initSandbox } from "./workspace/sandbox";
 import { scheduleMaintenanceCatchUp } from "./memory/experiment/maintenance";
 import { scheduleForgettingPurge } from "./memory/experiment/forget";
+import { startDebugServerFromState } from "./debug/server";
 
 export async function bootstrap(): Promise<void> {
   // 0) 沙盒实测（先于一切业务）：档位是部署声明的，边界是否真在生效要自己测一遍
@@ -42,6 +44,7 @@ export async function bootstrap(): Promise<void> {
   //    R1-1:灌库分批提交、去重逐文件让出事件循环,迁移期启动进度端点可被响应。
   setStartupPhase("load-state");
   setState(await loadState());
+  startAlphaDemo();
   state.launchCount += 1;
 
   // 2) 代理拦截器:必须在首次出站 fetch 之前安装,否则首个请求会触发 Bun 的 env 快照
@@ -121,4 +124,8 @@ export async function bootstrap(): Promise<void> {
   // 5) 生命周期 L3:耐久调度器。必须在启动收敛(3-run)之后启动;开关关闭时 tick 零副作用。
   //    定时器 unref,不阻止退出;停机时由 shutdown 的 stopProducers 停止。
   AgentTaskScheduler.start();
+
+  // 5b) 本地调试端口(PC-only,默认关):state 已就绪,按开关拉起回环监听。
+  //     失败只记警告——调试能力绝不阻断主服务。
+  startDebugServerFromState();
 }

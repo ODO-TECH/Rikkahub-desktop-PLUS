@@ -12,7 +12,12 @@
 // 标题与页面同源复用同一个 i18n key,所以改文案不会让定位漂移。用户搜了就是带着目的来的:
 // 条目在页内分段标签(tabKey)下则先切过去,在「高级设置」折叠区里(advanced)则替他展开。
 // 列表/详情页(供应商 / 助手…)的行作用于当前选中项的详情,不负责切换选中项。
-import { SETTINGS_NAV, settingsSubItems, type SettingsPageKey, type SettingsTabId } from "./settings-nav";
+import {
+  SETTINGS_NAV,
+  settingsSubItems,
+  type SettingsPageKey,
+  type SettingsTabId,
+} from "./settings-nav";
 
 export interface SettingsSearchEntry {
   readonly section: SettingsTabId;
@@ -46,7 +51,11 @@ function keywordsKey(name: string | undefined): string | undefined {
 }
 
 /** 普通设置行:titleKey 省略 `settings:` 前缀。 */
-function row(page: SettingsPageKey, titleKey: string, options: RowOptions = {}): SettingsSearchEntry {
+function row(
+  page: SettingsPageKey,
+  titleKey: string,
+  options: RowOptions = {},
+): SettingsSearchEntry {
   return {
     ...locate(page),
     titleKey: `settings:${titleKey}`,
@@ -56,8 +65,17 @@ function row(page: SettingsPageKey, titleKey: string, options: RowOptions = {}):
   };
 }
 
-function literal(page: SettingsPageKey, label: string, options: RowOptions = {}): SettingsSearchEntry {
-  return { ...locate(page), label, keywordsKey: keywordsKey(options.keywords), advanced: options.advanced };
+function literal(
+  page: SettingsPageKey,
+  label: string,
+  options: RowOptions = {},
+): SettingsSearchEntry {
+  return {
+    ...locate(page),
+    label,
+    keywordsKey: keywordsKey(options.keywords),
+    advanced: options.advanced,
+  };
 }
 
 /** 页面级条目的同义词(页键 → keywords 名)。 */
@@ -66,7 +84,7 @@ const PAGE_KEYWORDS: Partial<Record<SettingsPageKey, string>> = {
   "models/providers": "providers",
   "media/providers": "media_providers",
   "media/storage": "media_storage",
-  "network": "web_search",
+  network: "web_search",
   "connectivity/proxy": "proxy",
   "extensions/mcp": "mcp",
   "extensions/skills": "skills",
@@ -78,27 +96,36 @@ const PAGE_KEYWORDS: Partial<Record<SettingsPageKey, string>> = {
   "speech/tts": "tts",
   "speech/asr": "asr",
   memory: "memory",
-  "data": "backup",
+  data: "backup",
   "connectivity/server": "web_service",
   "connectivity/im": "im",
-  "experiments/agent-bot": "agent_bot",
+  agent: "agent_bot",
   "stats/logs": "logs",
   donate: "donate",
 };
 
-const PAGE_ENTRIES: readonly SettingsSearchEntry[] = SETTINGS_NAV.flatMap((item): SettingsSearchEntry[] => {
-  const subs = settingsSubItems(item.id);
-  if (subs.length === 0) {
-    return [{ section: item.id, titleKey: item.labelKey, page: true, keywordsKey: keywordsKey(PAGE_KEYWORDS[item.id as SettingsPageKey]) }];
-  }
-  return subs.map((sub) => ({
-    section: item.id,
-    sub: sub.id,
-    titleKey: sub.labelKey,
-    page: true,
-    keywordsKey: keywordsKey(PAGE_KEYWORDS[`${item.id}/${sub.id}` as SettingsPageKey]),
-  }));
-});
+const PAGE_ENTRIES: readonly SettingsSearchEntry[] = SETTINGS_NAV.flatMap(
+  (item): SettingsSearchEntry[] => {
+    const subs = settingsSubItems(item.id);
+    if (subs.length === 0) {
+      return [
+        {
+          section: item.id,
+          titleKey: item.labelKey,
+          page: true,
+          keywordsKey: keywordsKey(PAGE_KEYWORDS[item.id as SettingsPageKey]),
+        },
+      ];
+    }
+    return subs.map((sub) => ({
+      section: item.id,
+      sub: sub.id,
+      titleKey: sub.labelKey,
+      page: true,
+      keywordsKey: keywordsKey(PAGE_KEYWORDS[`${item.id}/${sub.id}` as SettingsPageKey]),
+    }));
+  },
+);
 
 const ADV = { advanced: true } as const;
 const MODE_TAB = "settings:mcp.tab.mode";
@@ -124,7 +151,10 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("general/app", "general.subagent_title", { keywords: "subagent" }),
   row("general/app", "general.subagent_enabled", { keywords: "subagent" }),
   row("general/app", "general.subagent_max_concurrency", { keywords: "subagent", advanced: true }),
-  row("general/app", "general.subagent_max_tasks_per_call", { keywords: "subagent", advanced: true }),
+  row("general/app", "general.subagent_max_tasks_per_call", {
+    keywords: "subagent",
+    advanced: true,
+  }),
   row("general/app", "general.subagent_token_budget", { keywords: "subagent", advanced: true }),
   row("general/app", "general.subagent_tools", { keywords: "subagent", advanced: true }),
   row("general/app", "general.shell_title", { keywords: "shell" }),
@@ -155,7 +185,10 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("assistants", "assistants.temperature", ADV),
   row("assistants", "assistants.top_p", ADV),
   row("assistants", "assistants.max_tokens", { advanced: true, keywords: "max_tokens" }),
-  row("assistants", "assistants.context_message_size", { advanced: true, keywords: "context_size" }),
+  row("assistants", "assistants.context_message_size", {
+    advanced: true,
+    keywords: "context_size",
+  }),
   row("assistants", "assistants.content_title", ADV),
   row("assistants", "assistants.message_template_title", ADV),
   row("assistants", "assistants.preset_messages_title", ADV),
@@ -192,7 +225,34 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("models/scenes", "models.feature.fast.title", { keywords: "fast_model" }),
   row("models/scenes", "models.feature.translate.title"),
   row("models/scenes", "models.feature.compress.title"),
+  row("models/scenes", "models.feature.compress.budget_aging_title", { advanced: true }),
+  row("models/scenes", "models.feature.compress.budget_keep_title", { advanced: true }),
+  row("models/scenes", "models.feature.compress.budget_excerpt_title", { advanced: true }),
+  // S7 模型驱动上下文工具面:总开关与效率提示是卡内直放行,两个数值在折叠区里。
+  row("models/scenes", "models.feature.compress.tools_title", { keywords: "context_tools" }),
+  row("models/scenes", "models.feature.compress.tools_nudge_title", { keywords: "context_nudge" }),
+  row("models/scenes", "models.feature.compress.tools_nudge_gate_title", { advanced: true }),
+  row("models/scenes", "models.feature.compress.tools_read_budget_title", { advanced: true }),
+  // S-F1 工具结果裁剪:总开关直放,三个数值在折叠区里。
+  row("models/scenes", "models.feature.compress.clip_title", { keywords: "result_clip" }),
+  row("models/scenes", "models.feature.compress.clip_threshold_title", {
+    advanced: true,
+    keywords: "result_clip",
+  }),
+  row("models/scenes", "models.feature.compress.clip_head_title", {
+    advanced: true,
+    keywords: "result_clip",
+  }),
+  row("models/scenes", "models.feature.compress.clip_tail_title", {
+    advanced: true,
+    keywords: "result_clip",
+  }),
   row("models/scenes", "models.feature.ocr.title"),
+  // DeepSeek 官方 OCR 三行都挂在 OCR 场景档同一张卡里;Key 与用途两行只在开关打开后出现,
+  // 搜到是跳页,行不在页面上时落点自然停在页面顶部(不会误跳别处)。
+  row("models/scenes", "models.feature.ocr.deepseek_title", { keywords: "deepseek_ocr" }),
+  row("models/scenes", "models.feature.ocr.deepseek_key_title", { keywords: "api_key" }),
+  row("models/scenes", "models.feature.ocr.deepseek_purpose_title", { keywords: "ocr_purpose" }),
   row("models/scenes", "models.feature.embedding.title", { keywords: "embedding" }),
   row("models/scenes", "models.feature.rerank.title", { keywords: "rerank" }),
 
@@ -220,6 +280,18 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("media/storage", "media.default_video"),
 
   // 网络
+  // Agent › 工作区工具(PTC 与工具契约;原「拓展 › 工作区工具」整页并入)
+  literal("agent", "工作区工具", { keywords: "workspace_tools" }),
+  row("agent", "workspace.ptc_title", { keywords: "workspace_tools" }),
+  row("agent", "workspace.ptc_enable", { keywords: "workspace_tools" }),
+  row("agent", "workspace.ptc_timeout", { keywords: "workspace_tools" }),
+  row("agent", "workspace.read_contract", { advanced: true, keywords: "workspace_tools" }),
+  row("agent", "workspace.read_dedup", { advanced: true, keywords: "workspace_tools" }),
+  row("agent", "workspace.search_coverage", { advanced: true, keywords: "workspace_tools" }),
+  row("agent", "workspace.tool_discovery", { advanced: true, keywords: "workspace_tools" }),
+  row("agent", "workspace.resumable_output", { advanced: true, keywords: "workspace_tools" }),
+  row("agent", "workspace.mcp_description_cap", { advanced: true, keywords: "workspace_tools" }),
+
   row("network", "search.type"),
   literal("network", "API Key", { keywords: "api_key" }),
   row("network", "search.field.mode"),
@@ -241,6 +313,7 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
 
   // 拓展
   row("extensions/mcp", "mcp.connection_title"),
+  row("extensions/mcp", "mcp.requires_workspace"),
   row("extensions/mcp", "mcp.transport"),
   row("extensions/mcp", "mcp.server.url"),
   row("extensions/mcp", "mcp.server.command"),
@@ -367,17 +440,11 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("experiments/mood", "experiments.mood.timeline_empty"),
 
   // 实验功能（AgentBot：自主循环 / 运行记录 / 传输重试）
-  row("experiments/agent-bot", "experiments.agent_bot.notice_title"),
-  row("experiments/agent-bot", "experiments.agent_bot.master_title"),
-  row("experiments/agent-bot", "experiments.agent_bot.enable", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.transport_retry", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.fold_loop", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.require_verified", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.max_replans", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.stall_repeat_limit", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.same_error_limit", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.scheduling", { keywords: "agent_bot" }),
-  row("experiments/agent-bot", "experiments.agent_bot.audit_title", { keywords: "agent_bot" }),
+  literal("agent", "运行", { keywords: "agent_bot" }),
+  literal("agent", "网络失败重试", { keywords: "agent_bot" }),
+  literal("agent", "验证计划完成", { keywords: "agent_bot" }),
+  literal("agent", "定时任务", { keywords: "agent_bot" }),
+  literal("agent", "运行记录", { keywords: "agent_bot", advanced: true }),
 
   // 数据管理
   row("data", "data.backup_title"),
@@ -410,6 +477,10 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("connectivity/server", "data.sandbox_switch", { keywords: "sandbox" }),
   row("connectivity/server", "data.sandbox_measured", { keywords: "sandbox" }),
   row("connectivity/server", "data.sandbox_extra_dirs", { keywords: "sandbox" }),
+  row("connectivity/server", "data.debug_title"),
+  row("connectivity/server", "data.debug_switch"),
+  row("connectivity/server", "data.debug_port"),
+  row("connectivity/server", "data.debug_token"),
   row("connectivity/server", "data.web_listen_title", { keywords: "port" }),
   row("connectivity/server", "proxy.port_number", { keywords: "port" }),
   row("connectivity/server", "proxy.ua_title", { keywords: "user_agent" }),
@@ -444,7 +515,10 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   row("about", "about.check_update", { keywords: "update" }),
 ];
 
-export const SETTINGS_SEARCH_INDEX: readonly SettingsSearchEntry[] = [...PAGE_ENTRIES, ...ROW_ENTRIES];
+export const SETTINGS_SEARCH_INDEX: readonly SettingsSearchEntry[] = [
+  ...PAGE_ENTRIES,
+  ...ROW_ENTRIES,
+];
 
 export interface SettingsSearchResult {
   readonly entry: SettingsSearchEntry;

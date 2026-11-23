@@ -220,6 +220,34 @@ describe("qwen-audio-3.0 升级(§4.5)", () => {
   });
 });
 
+describe("DeepSeek 官方工具 API 合成(对齐安卓 DeepSeekTTSProvider)", () => {
+  test("endpoint/body:非 OpenAI 兼容格式,请求 pcm 且音色只有 stella/tide", () => {
+    const spec = TTS_PROVIDER_REGISTRY.deepseek;
+    const p = provider("deepseek");
+    expect(spec.endpoint(p)).toBe("https://api.deepseek.com/v1/tools/tts");
+    expect(spec.headers(p)).toEqual({ Authorization: "Bearer sk-test", "Content-Type": "application/json" });
+    expect(spec.body(p, TEXT)).toEqual({ text: TEXT, voice_id: "stella", format: "pcm" });
+    expect(spec.body(provider("deepseek", { voiceId: "tide" }), TEXT)).toEqual({ text: TEXT, voice_id: "tide", format: "pcm" });
+    // voiceId 被清空时回落官方默认 stella,不能下发空串(官方直接 400)。
+    expect(spec.body(provider("deepseek", { voiceId: "" }), TEXT).voice_id).toBe("stella");
+    expect(spec.mime(p)).toBe("audio/wav");
+  });
+
+  test("parse:整段 24kHz PCM 按实际字节数补 WAV 头(不信服务端流式 wav 头)", async () => {
+    const spec = TTS_PROVIDER_REGISTRY.deepseek;
+    const pcm = Buffer.alloc(3200, 0x41);
+    const wav = await spec.parse(provider("deepseek"), new Response(pcm));
+    expect(wav.subarray(0, 4).toString("ascii")).toBe("RIFF");
+    expect(wav.readUInt32LE(4)).toBe(36 + pcm.length);
+    expect(wav.subarray(8, 12).toString("ascii")).toBe("WAVE");
+    expect(wav.readUInt32LE(24)).toBe(24000);
+    expect(wav.readUInt16LE(34)).toBe(16);
+    expect(wav.subarray(36, 40).toString("ascii")).toBe("data");
+    expect(wav.readUInt32LE(40)).toBe(pcm.length);
+    expect(wav.length).toBe(44 + pcm.length);
+  });
+});
+
 describe("normalize 存量迁移(千万别让老用户 400)", () => {
   test("旧 qwen3-tts 默认值 → qwen-audio-3.0", () => {
     const [q] = normalizeTtsProviders([{
@@ -316,7 +344,8 @@ describe("type 单源(Global Verify Sync)", () => {
     for (const key of Object.keys(TTS_PROVIDER_REGISTRY)) {
       expect(TTS_PROVIDER_TYPES).toContain(key as TtsProvider["type"]);
     }
-    // 12 家(1 system + 11 在线),与安卓 Types 列表一致(2.5.2 增 volcengine)。
-    expect(TTS_PROVIDER_TYPES.length).toBe(12);
+    // 14 家(1 system + 1 本地 yukkuri + 12 在线):2.5.2 增 volcengine,2026-11 对齐安卓
+    // f361bbc1 增 deepseek,同月增桌面端油库里(不在在线注册表里,故显式列在 TTS_PROVIDER_TYPES)。
+    expect(TTS_PROVIDER_TYPES.length).toBe(14);
   });
 });

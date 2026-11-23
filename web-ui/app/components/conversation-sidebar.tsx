@@ -4,6 +4,9 @@ import dayjs from "dayjs";
 import type { TFunction } from "i18next";
 import { toast } from "sonner";
 import {
+  Bot,
+  MessageSquare,
+  ChevronDown,
   Check,
   CheckSquare,
   Copy,
@@ -217,7 +220,9 @@ export interface ConversationSidebarProps {
   onUpdateTitle?: (id: string, title: string) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
   onDeleteMany?: (ids: string[]) => Promise<void>;
-  onCreateConversation?: () => void;
+  onCreateConversation?: (mode?: "agent" | "chat") => void;
+  /** 当前容器的主新建类型:对话标签固定纯对话,工作区标签默认 Agent。 */
+  newConversationKind?: "agent" | "chat";
   webAuthEnabled?: boolean;
 }
 
@@ -337,6 +342,15 @@ const ConversationListRow = React.memo(
                   {selected ? <CheckSquare className="size-4" /> : <Square className="size-4" />}
                 </span>
               )}
+              {conversation.conversationKind === "chat" ? (
+                <span className="shrink-0" title="纯对话">
+                  <MessageSquare className="size-4 text-muted-foreground" aria-label="纯对话" />
+                </span>
+              ) : (
+                <span className="shrink-0" title="Agent">
+                  <Bot className="size-4 text-primary" aria-label="Agent" />
+                </span>
+              )}
               <span className="flex-1 truncate">
                 {conversation.title || t("conversation_sidebar.unnamed_conversation")}
               </span>
@@ -347,8 +361,16 @@ const ConversationListRow = React.memo(
                     "inline-block size-2 rounded-full",
                     awaitingApproval ? "animate-pulse bg-warning" : "bg-success",
                   )}
-                  aria-label={t(awaitingApproval ? "conversation_sidebar.awaiting_approval" : "conversation_sidebar.generating")}
-                  title={t(awaitingApproval ? "conversation_sidebar.awaiting_approval" : "conversation_sidebar.generating")}
+                  aria-label={t(
+                    awaitingApproval
+                      ? "conversation_sidebar.awaiting_approval"
+                      : "conversation_sidebar.generating",
+                  )}
+                  title={t(
+                    awaitingApproval
+                      ? "conversation_sidebar.awaiting_approval"
+                      : "conversation_sidebar.generating",
+                  )}
                 />
               )}
             </span>
@@ -496,7 +518,12 @@ const ConversationListRow = React.memo(
                       disabled={pendingAction !== null}
                       onSelect={async (event) => {
                         event.preventDefault();
-                        if (!(await confirmDialog({ title: t("conversation_sidebar.delete_confirm"), danger: true }))) {
+                        if (
+                          !(await confirmDialog({
+                            title: t("conversation_sidebar.delete_confirm"),
+                            danger: true,
+                          }))
+                        ) {
                           return;
                         }
                         void runAction(
@@ -642,6 +669,7 @@ export const ConversationSidebar = React.memo(
     onDelete,
     onDeleteMany,
     onCreateConversation,
+    newConversationKind = "agent",
     webAuthEnabled = false,
   }: ConversationSidebarProps) => {
     const { t, i18n } = useTranslation();
@@ -781,7 +809,9 @@ export const ConversationSidebar = React.memo(
     // 「编辑」= 设置 → 助手,并选中这一位。桌面走设置模态(留在当前页),窄屏走
     // /settings 整页——与 SettingsLink 同一套承载判断。
     const openAssistantSettings = React.useCallback((assistantId: string) => {
-      setPendingSettingsSearch(`?section=assistants&assistantId=${encodeURIComponent(assistantId)}`);
+      setPendingSettingsSearch(
+        `?section=assistants&assistantId=${encodeURIComponent(assistantId)}`,
+      );
       setPickerOpen(false);
     }, []);
 
@@ -822,7 +852,9 @@ export const ConversationSidebar = React.memo(
       if (!onDeleteMany || selectedConversationIds.length === 0) return;
       if (
         !(await confirmDialog({
-          title: t("conversation_sidebar.batch_delete_confirm", { count: selectedConversationIds.length }),
+          title: t("conversation_sidebar.batch_delete_confirm", {
+            count: selectedConversationIds.length,
+          }),
           danger: true,
         }))
       )
@@ -906,76 +938,78 @@ export const ConversationSidebar = React.memo(
               用户资料行(F1:按用户要求保持顶部,不做归底布局);
               I5:折叠钮居其右侧垂直居中。 */}
           <div className="flex items-center gap-1">
-          <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
-            <DialogTrigger asChild>
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition hover:bg-sidebar-accent"
-              >
-                <UIAvatar
-                  size="default"
-                  name={localProfile.name}
-                  avatar={localProfile.avatar}
-                  className="ring-1 ring-sidebar-border/70"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium leading-none">
-                    {localProfile.name}
-                  </div>
-                  <div className="mt-1 truncate text-xs text-muted-foreground">
-                    {t("conversation_sidebar.welcome_back")}
-                  </div>
-                </div>
-              </button>
-            </DialogTrigger>
-            <DialogContent className="max-w-md">
-              <DialogHeader>
-                <DialogTitle>{t("conversation_sidebar.edit_profile", "Edit profile")}</DialogTitle>
-                <DialogDescription>
-                  {t(
-                    "conversation_sidebar.edit_profile_description",
-                    "This is saved by the local PC backend and used in every chat.",
-                  )}
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <AvatarCropper
-                    hint={false}
-                    fallbackName={profileName || userName}
-                    value={profileAvatar}
-                    onChange={async (avatar) => {
-                      setProfileAvatar(avatar);
-                      await saveProfile(profileName, avatar);
-                    }}
+            <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
+              <DialogTrigger asChild>
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2.5 py-2.5 text-left transition hover:bg-sidebar-accent"
+                >
+                  <UIAvatar
+                    size="default"
+                    name={localProfile.name}
+                    avatar={localProfile.avatar}
+                    className="ring-1 ring-sidebar-border/70"
                   />
-                  <div className="min-w-0 flex-1 text-sm text-muted-foreground">
-                    {profileName || userName}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium leading-none">
+                      {localProfile.name}
+                    </div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">
+                      {t("conversation_sidebar.welcome_back")}
+                    </div>
+                  </div>
+                </button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>
+                    {t("conversation_sidebar.edit_profile", "Edit profile")}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {t(
+                      "conversation_sidebar.edit_profile_description",
+                      "This is saved by the local PC backend and used in every chat.",
+                    )}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <AvatarCropper
+                      hint={false}
+                      fallbackName={profileName || userName}
+                      value={profileAvatar}
+                      onChange={async (avatar) => {
+                        setProfileAvatar(avatar);
+                        await saveProfile(profileName, avatar);
+                      }}
+                    />
+                    <div className="min-w-0 flex-1 text-sm text-muted-foreground">
+                      {profileName || userName}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium" htmlFor="profile-name">
+                      {t("conversation_sidebar.profile_name", "Name")}
+                    </label>
+                    <Input
+                      id="profile-name"
+                      value={profileName}
+                      onChange={(event) => setProfileName(event.target.value)}
+                      placeholder={t("conversation_sidebar.profile_name_placeholder", "Your name")}
+                    />
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="profile-name">
-                    {t("conversation_sidebar.profile_name", "Name")}
-                  </label>
-                  <Input
-                    id="profile-name"
-                    value={profileName}
-                    onChange={(event) => setProfileName(event.target.value)}
-                    placeholder={t("conversation_sidebar.profile_name_placeholder", "Your name")}
-                  />
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setProfileOpen(false)}>
-                  {t("common:cancel", "Cancel")}
-                </Button>
-                <Button onClick={() => void handleProfileSave()} disabled={profileSaving}>
-                  {profileSaving ? t("common:saving", "Saving") : t("common:save", "Save")}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <SidebarTrigger className="mr-0.5 shrink-0 text-muted-foreground hover:text-foreground" />
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setProfileOpen(false)}>
+                    {t("common:cancel", "Cancel")}
+                  </Button>
+                  <Button onClick={() => void handleProfileSave()} disabled={profileSaving}>
+                    {profileSaving ? t("common:saving", "Saving") : t("common:save", "Save")}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <SidebarTrigger className="mr-0.5 shrink-0 text-muted-foreground hover:text-foreground" />
           </div>
         </SidebarHeader>
         <SidebarContent className="min-h-0">
@@ -989,12 +1023,42 @@ export const ConversationSidebar = React.memo(
                 variant="ghost"
                 size="sm"
                 className="h-9 w-full justify-start gap-3 rounded-[var(--ds-radius-sm)] px-2 font-medium text-[13px] text-[var(--ds-text-primary)]"
-                onClick={onCreateConversation}
+                onClick={() => onCreateConversation?.(newConversationKind)}
               >
                 <Plus className="size-[18px] text-[var(--ds-icon)]" strokeWidth={1.75} />
-                {t("conversation_sidebar.new_conversation")}
+                {t(
+                  newConversationKind === "chat"
+                    ? "conversation_sidebar.new_chat_conversation"
+                    : "conversation_sidebar.new_conversation",
+                )}
               </Button>
 
+              {/* 对话标签只有纯对话一种类型,不需要类型下拉;Agent 在工作区标签里新建。 */}
+              {newConversationKind === "agent" ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-full justify-start gap-2 px-2 text-xs text-muted-foreground"
+                      aria-label="选择新建对话类型"
+                    >
+                      <ChevronDown className="size-3" />
+                      新建选项
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem onSelect={() => onCreateConversation?.("agent")}>
+                      <Bot className="size-4" />
+                      Agent（默认）
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => onCreateConversation?.("chat")}>
+                      <MessageSquare className="size-4" />
+                      纯对话
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
               <ConversationSearchButton onSelect={onSelect} />
               {selectionMode ? (
                 <div className="flex items-center gap-1">
@@ -1423,7 +1487,7 @@ export const ConversationSidebar = React.memo(
             <ThemeModeToggle />
 
             <a
-              href="https://github.com/ODO-TECH/Rikkahub-desktoPLUS"
+              href="https://github.com/ODO-TECH/Rikkahub-desktop-PLUS"
               target="_blank"
               rel="noopener noreferrer"
               className="min-w-0 flex-1 truncate text-right whitespace-nowrap text-xs font-normal text-foreground/80 transition-colors hover:text-foreground"
@@ -1432,7 +1496,6 @@ export const ConversationSidebar = React.memo(
               少女工作中……
             </a>
           </div>
-
         </SidebarFooter>
       </Sidebar>
     );

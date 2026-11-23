@@ -7,6 +7,12 @@ import type { Assistant, JsonValue, Provider, ProxyConfig, SearchService } from 
 import type { Settings } from "../../foundation/types/settings";
 import { validateSubagentPatch } from "../../foundation/types/settings/subagent-config";
 import { validateAgentLoopPatch } from "../../foundation/types/settings/agent-loop-config";
+import { defaultContextBudgetConfig, normalizeContextBudgetConfig } from "../../foundation/types/settings/context-budget-config";
+import { defaultContextToolsConfig, normalizeContextToolsConfig } from "../../foundation/types/settings/context-tools-config";
+import { defaultPtcConfig, normalizePtcConfig } from "../../foundation/types/settings/ptc-config";
+import { defaultResultClipConfig, normalizeResultClipConfig, validateResultClipConfig } from "../../foundation/types/settings/result-clip-config";
+import { defaultDebugServerConfig, normalizeDebugServerConfig } from "../../foundation/types/settings/debug-server-config";
+import { applyDebugServerConfig } from "../../debug/server";
 import type { WorkspaceToolsConfig } from "../../foundation/types/settings/workspace-tools-config";
 import { getStringArray, id, isRecord } from "../../foundation/utils";
 import { RUNNING_IN_CONTAINER } from "../../foundation/platform";
@@ -48,7 +54,7 @@ import { deleteById, reorderByIds, uniqueStrings, upsertById, validateKnownJsonI
 import { normalizePreferredPort, normalizeProxyConfig } from "../../foundation/net";
 import { defaultSettings } from "../../app-config/defaults";
 import { DEFAULT_COMPRESS_PROMPT, DEFAULT_OCR_PROMPT, DEFAULT_PROMPT_OPTIMIZE_PROMPT, DEFAULT_SUGGESTION_PROMPT, DEFAULT_TITLE_PROMPT, DEFAULT_TRANSLATION_PROMPT } from "../../app-config/prompts";
-import { PI_COMPACTION_PROMPT } from "../../pi-engine/compaction-prompt-text";
+import { COMPACTION_PROMPT } from "../../../agent-kernel/src/context";
 import { updateSettings } from "../../app-config";
 import { markProviderTestResult, providerAuthChanged } from "../../model-providers/checks";
 import { endpointFor, fetchProviderBalance, fetchProviderModels, runProviderCheckForModel, testEndpointFor } from "../../model-providers/checks";
@@ -120,7 +126,7 @@ export async function handleSettingsRoutes(request: Request, url: URL, path: str
   // chat 引擎的 prompt 可编辑、走 settings.compressPrompt,不在此列;此端点只暴露
   // "引擎自带、不可编辑"的原生 prompt。数组形状留第三引擎拓展。
   if (path === "settings/engine-compaction-prompts" && request.method === "GET") {
-    return json({ engines: [{ engine: "pi", prompt: PI_COMPACTION_PROMPT }] });
+    return json({ engines: [{ engine: "kernel", prompt: COMPACTION_PROMPT }] });
   }
   // settings 快照推送已并入 /api/events 通道(settings 事件)。
   if (path === "settings/display" && request.method === "POST") {
@@ -549,6 +555,7 @@ export async function handleSettingsRoutes(request: Request, url: URL, path: str
         // HTTP+SSE 传输已移除；本地进程用 stdio，内置用 builtin，其余一律 Streamable HTTP。
         type: transport,
         id: serverId,
+        requiresWorkspace: body.requiresWorkspace === true || common.requiresWorkspace === true,
         url: isStdio || isBuiltin ? "" : String(body.url ?? "").trim(),
         ...(isStdio
           ? {
@@ -991,6 +998,18 @@ ${outcome.serverName ? `<p>${esc(outcome.serverName)}</p>` : ""}
       translateModeId: String(body.translateModeId ?? state.settings.translateModeId),
       imageGenerationModelId: String(body.imageGenerationModelId ?? state.settings.imageGenerationModelId),
       ocrModelId: String(body.ocrModelId ?? state.settings.ocrModelId),
+      // DeepSeek 官方 OCR(OCR 栏目下的可选引擎,PC-only):
+      // · 布尔缺省不动现值(与 chatAutoCompact 同口径,老前端/部分调用不回传)
+      // · Key 只做 trim,不做「非空才能开」的写入侧校验——判定口径在 media/ocr.ts 单点,
+      //   没填 Key 时由 OCR 调用给出人话错误(报错档语义,与 ocrModelId 未配置同款)
+      // · purpose 只认官方两值,值域外不动现值
+      deepseekOcrEnabled: typeof body.deepseekOcrEnabled === "boolean" ? body.deepseekOcrEnabled : state.settings.deepseekOcrEnabled,
+      deepseekOcrApiKey: String(body.deepseekOcrApiKey ?? state.settings.deepseekOcrApiKey ?? "").trim(),
+      deepseekOcrPurpose: body.deepseekOcrPurpose === "rich_layout_recognition"
+        ? "rich_layout_recognition"
+        : body.deepseekOcrPurpose === "text_recognition"
+          ? "text_recognition"
+          : state.settings.deepseekOcrPurpose,
       compressModelId: String(body.compressModelId ?? state.settings.compressModelId),
       // 聊天模式自动压缩开关:缺省不动现值(老前端不回传布尔);非布尔值同样保持现值。
       chatAutoCompact: typeof body.chatAutoCompact === "boolean" ? body.chatAutoCompact : state.settings.chatAutoCompact,
@@ -1016,6 +1035,80 @@ ${outcome.serverName ? `<p>${esc(outcome.serverName)}</p>` : ""}
       invalidateContextSnapshots();
     }
     return json({ status: "ok" });
+  }
+  if (path === "settings/context-budget" && request.method === "POST") {
+    const body = await readJson<Record<string, unknown>>(request);
+    const current = state.settings.contextBudget ?? defaultContextBudgetConfig();
+    // 缺省/非法值保持现值:老前端不回传新字段时不能把开关重置。
+    updateSettings({
+      ...state.settings,
+      contextBudget: normalizeContextBudgetConfig({
+        enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
+        toolAgingEnabled: typeof body.toolAgingEnabled === "boolean" ? body.toolAgingEnabled : current.toolAgingEnabled,
+        toolAgingKeepTurns: typeof body.toolAgingKeepTurns === "number" ? body.toolAgingKeepTurns : current.toolAgingKeepTurns,
+        toolAgingExcerptChars: typeof body.toolAgingExcerptChars === "number" ? body.toolAgingExcerptChars : current.toolAgingExcerptChars,
+      }),
+    });
+    return json({ status: "ok", contextBudget: state.settings.contextBudget });
+  }
+  if (path === "settings/context-tools" && request.method === "POST") {
+    const body = await readJson<Record<string, unknown>>(request);
+    const current = state.settings.contextTools ?? defaultContextToolsConfig();
+    // 缺省/非法值保持现值:老前端不回传新字段时不能把开关重置。
+    updateSettings({
+      ...state.settings,
+      contextTools: normalizeContextToolsConfig({
+        enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
+        nudgeEnabled: typeof body.nudgeEnabled === "boolean" ? body.nudgeEnabled : current.nudgeEnabled,
+        nudgeGrowthTokens: typeof body.nudgeGrowthTokens === "number" ? body.nudgeGrowthTokens : current.nudgeGrowthTokens,
+        readOriginalMaxTokens: typeof body.readOriginalMaxTokens === "number" ? body.readOriginalMaxTokens : current.readOriginalMaxTokens,
+      }),
+    });
+    return json({ status: "ok", contextTools: state.settings.contextTools });
+  }
+  if (path === "settings/ptc" && request.method === "POST") {
+    const body = await readJson<Record<string, unknown>>(request);
+    const current = state.settings.ptc ?? defaultPtcConfig();
+    // 缺省/非法值保持现值;越界 timeout 由 normalize 夹到 [5s, 600s](与加载侧同口径)。
+    updateSettings({
+      ...state.settings,
+      ptc: normalizePtcConfig({
+        enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
+        timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : current.timeoutMs,
+      }),
+    });
+    return json({ status: "ok", ptc: state.settings.ptc });
+  }
+  if (path === "settings/result-clip" && request.method === "POST") {
+    const body = await readJson<Record<string, unknown>>(request);
+    const current = state.settings.resultClip ?? defaultResultClipConfig();
+    const next = normalizeResultClipConfig({
+      enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
+      thresholdChars: typeof body.thresholdChars === "number" ? body.thresholdChars : current.thresholdChars,
+      headChars: typeof body.headChars === "number" ? body.headChars : current.headChars,
+      tailChars: typeof body.tailChars === "number" ? body.tailChars : current.tailChars,
+    });
+    // 写入侧校验:头+标记+尾 > 阈值时拒绝(否则"裁剪"会让结果更长),原值不动。
+    const invalid = validateResultClipConfig(next);
+    if (invalid) return error(invalid, 400, "result_clip_invalid");
+    updateSettings({ ...state.settings, resultClip: next });
+    return json({ status: "ok", resultClip: state.settings.resultClip });
+  }
+  if (path === "settings/debug-server" && request.method === "POST") {
+    const body = await readJson<Record<string, unknown>>(request);
+    const current = state.settings.debugServer ?? defaultDebugServerConfig();
+    // 缺省/非法值保持现值:老前端不回传新字段时不能把开关重置。端口越界回落现值,
+    // 由 normalize 统一裁决(与加载侧同一口径)。
+    const next = normalizeDebugServerConfig({
+      enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
+      port: typeof body.port === "number" ? body.port : current.port,
+      token: typeof body.token === "string" ? body.token : current.token,
+    });
+    updateSettings({ ...state.settings, debugServer: next });
+    // 即时生效:开=拉起回环监听,关=停止;端口变化重绑。应用失败(端口被占)原样返回,
+    // 由设置页提示,不把 enabled 偷偷改回 false(用户下次启动仍会重试)。
+    const status = applyDebugServerConfig(next);
+    return json({ status: "ok", debugServer: state.settings.debugServer, runtime: status });
   }
   if (path === "settings/kelivo-sync" && request.method === "POST") {
     const body = await readJson<{ exportKelivoBackup?: unknown; options?: unknown }>(request);

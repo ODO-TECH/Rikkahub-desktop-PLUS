@@ -3,19 +3,40 @@
     "label": "HarmonyOS Sans",
     "family": "\"HarmonyOS Sans\", system-ui, sans-serif",
     "weights": [
-      { "file": "HarmonyOS_Sans_Thin.ttf", "weight": 100 },
-      { "file": "HarmonyOS_Sans_Light.ttf", "weight": 300 },
-      { "file": "HarmonyOS_Sans_Regular.ttf", "weight": 400 },
-      { "file": "HarmonyOS_Sans_Medium.ttf", "weight": 500 },
-      { "file": "HarmonyOS_Sans_Bold.ttf", "weight": 700 },
-      { "file": "HarmonyOS_Sans_Black.ttf", "weight": 900 }
+      {
+        "file": "HarmonyOS_Sans_Thin.woff2",
+        "weight": 100
+      },
+      {
+        "file": "HarmonyOS_Sans_Light.woff2",
+        "weight": 300
+      },
+      {
+        "file": "HarmonyOS_Sans_Regular.woff2",
+        "weight": 400
+      },
+      {
+        "file": "HarmonyOS_Sans_Medium.woff2",
+        "weight": 500
+      },
+      {
+        "file": "HarmonyOS_Sans_Bold.woff2",
+        "weight": 700
+      },
+      {
+        "file": "HarmonyOS_Sans_Black.woff2",
+        "weight": 900
+      }
     ]
   },
   "harmonyos-sans-sc": {
     "label": "HarmonyOS Sans SC",
     "family": "\"HarmonyOS Sans SC\", \"HarmonyOS Sans\", system-ui, sans-serif",
     "weights": [
-      { "file": "HarmonyOS_Sans_SC_Regular.ttf", "weight": 400 }
+      {
+        "file": "HarmonyOS_Sans_SC_Regular.woff2",
+        "weight": 400
+      }
     ]
   },
   "MiSans-Regular.woff2": {
@@ -24,22 +45,52 @@
   },
   "NotoSerifSC-Regular.ttf": {
     "label": "思源宋体 (Noto Serif SC)",
-    "family": "\"Noto Serif SC\", serif"
+    "family": "\"Noto Serif SC\", serif",
+    "weights": [
+      {
+        "file": "NotoSerifSC-Regular.woff2",
+        "weight": 400
+      }
+    ]
   },
   "Charter BT.ttf": {
     "label": "Charter BT",
-    "family": "\"Charter BT\", Georgia, serif"
+    "family": "\"Charter BT\", Georgia, serif",
+    "weights": [
+      {
+        "file": "Charter BT.woff2",
+        "weight": 400
+      }
+    ]
   },
   "Georgia.ttf": {
     "label": "Georgia",
-    "family": "\"Georgia\", serif"
+    "family": "\"Georgia\", serif",
+    "weights": [
+      {
+        "file": "Georgia.woff2",
+        "weight": 400
+      }
+    ]
   },
   "STIXGeneral-Regular.ttf": {
     "label": "STIX 通用",
-    "family": "\"STIXGeneral\", serif"
+    "family": "\"STIXGeneral\", serif",
+    "weights": [
+      {
+        "file": "STIXGeneral-Regular.woff2",
+        "weight": 400
+      }
+    ]
   },
   "gulliver.otf": {
     "label": "Gulliver (类 Times)",
-    "family": "\"Gulliver\", \"Times New Roman\", serif"
+    "family": "\"Gulliver\", \"Times New Roman\", serif",
+    "weights": [
+      {
+        "file": "gulliver.woff2",
+        "weight": 400
+      }
+    ]
   }
 }

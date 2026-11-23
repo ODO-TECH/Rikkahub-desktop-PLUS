@@ -11,6 +11,7 @@ const priorState = state;
 function installFixture(): void {
   setState({
     settings: {
+      assistants: [],
       enableWebSearch: false,
       mcpServers: [
         {

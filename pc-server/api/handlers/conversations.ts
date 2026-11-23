@@ -166,7 +166,7 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
     const initialFrames: [string, JsonValue | object][] = [initialFrame, ...statusFrames];
     // 自主循环(S1):运行记录快照随详情流首帧下发(仅总开关启用时有 run)。增量走
     // agent-run 帧(api/sse 的 broadcastAgentRun);这里带全量事件用于切页/重连恢复。
-    const agentRunSnapshot = state.settings.agentLoop?.enabled === true ? getRunSnapshot(conversation.id) : null;
+    const agentRunSnapshot = conversation.executionMode !== "chat" ? getRunSnapshot(conversation.id) : null;
     if (agentRunSnapshot?.run) {
       initialFrames.push(["agent-run", {
         type: "agent_run",
@@ -290,7 +290,7 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
     if (!recovery) return error("Agent run not found", 404);
     // 总开关关闭时不宣称可恢复:否则面板会显示一个点了必 409 的按钮。
     // 判定仍由服务端给,前端不做第二套规则。
-    if (recovery.mode === "new_run" && state.settings.agentLoop?.enabled !== true) {
+    if (recovery.mode === "new_run" && conversation.executionMode === "chat") {
       return json({ ...recovery, mode: "none", reason: "feature_disabled" } satisfies AgentRunRecoveryDto);
     }
     return json(recovery satisfies AgentRunRecoveryDto);
@@ -303,7 +303,7 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
     const conversation = getConversation(conversationAgentRunResume[1]);
     if (!conversation) return error("Conversation not found", 404);
     // 总开关关闭时不产生恢复写入(与调度/运行记录同口径;GET 判定保持只读可查)。
-    if (state.settings.agentLoop?.enabled !== true) {
+    if (conversation.executionMode === "chat") {
       return error("Run cannot be resumed: feature_disabled", 409, "run_not_resumable");
     }
     if (compressing.has(conversation.id)) {
@@ -389,15 +389,17 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
     // messages POST 的 body 在 ensureConversation 之前读:工作区绑定是创建期属性,
     // 必须随建档请求生效(会话首条消息才建档,事后无绑定时机)。body 只读这一次,
     // 下方 messages 分支复用。绑定前校验工作区存在,防悬空引用。
-    let messagesBody: { parts?: JsonValue[]; workspaceId?: string } | null = null;
+    let messagesBody: { parts?: JsonValue[]; executionMode?: "agent" | "chat"; conversationKind?:"agent"|"chat"; workspaceId?: string } | null = null;
     if (sub === "messages" && request.method === "POST") {
-      messagesBody = await readJson<{ parts?: JsonValue[]; workspaceId?: string }>(request);
+      messagesBody = await readJson<{parts?:JsonValue[];executionMode?:"agent"|"chat";conversationKind?:"agent"|"chat";workspaceId?:string}>(request);
+      if(messagesBody.executionMode !== undefined && !["agent","chat"].includes(messagesBody.executionMode))return error("Invalid executionMode",400);
+      if(messagesBody.conversationKind !== undefined && !["agent","chat"].includes(messagesBody.conversationKind))return error("Invalid conversationKind",400);
       if (messagesBody.workspaceId && !getWorkspace(String(messagesBody.workspaceId))) {
         return error("Workspace not found", 404);
       }
     }
     const conversation = (sub === "messages" || sub === "system-prompt") && request.method === "POST"
-      ? ensureConversation(conversationId, messagesBody?.workspaceId ? { workspaceId: String(messagesBody.workspaceId) } : undefined)
+      ? ensureConversation(conversationId, { workspaceId: messagesBody?.workspaceId ? String(messagesBody.workspaceId) : undefined, conversationKind:messagesBody?.conversationKind, executionMode: messagesBody?.executionMode === "chat" ? "chat" : "agent" })
       : getConversation(conversationId);
     if (!conversation) return error("Conversation not found", 404);
     // DB-first:整个子路由块持有引用——translate/OCR 等长 await 期间实例不得被 sweep
@@ -408,6 +410,12 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
     // I-2:REST 详情保持全量(导出/分享/轮询兜底依赖完整数据),但同样附带 stamp 清单,
     // 客户端 detail 因此永远有清单可参与后续窗口化快照的前缀合并。
     if (!sub && request.method === "GET") return json(toSnapshotConversationDto(conversation, generating.has(conversation.id), Infinity));
+    if(sub === "kernel-runs" && request.method === "GET") {
+      const ids=conversation.messages.flatMap(n=>n.messages[n.selectIndex]?.annotations ?? []).filter((a:any)=>a.type==="kernel_run").map((a:any)=>String(a.id));
+      const {kernelRunViews}=await import("../../kernel-engine/driver");
+      return json({runs:kernelRunViews(ids)});
+    }
+
     // 0.0.3 侧边栏:会话涉及的文件(附件/产出/本次改动)。选中分支口径,与 UI 所见一致。
     if (sub === "files" && request.method === "GET") {
       const workspace = conversation.workspaceId ? getWorkspace(conversation.workspaceId) : null;
@@ -434,6 +442,17 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
       };
       return json(page);
     }
+    if (sub === "mode" && request.method === "POST") {
+      const body = await request.json() as { executionMode?: string };
+      if (body.executionMode !== "agent" && body.executionMode !== "chat") return error("Invalid executionMode", 400);
+      if(conversation.conversationKind === "chat" && body.executionMode !== "chat")return error("纯对话会话不支持 Agent 档位",409);
+      conversation.executionMode = body.executionMode;
+      conversation.updateAt = Date.now();
+      persistConversation(conversation);
+      broadcastConversation(conversation);
+      broadcastList();
+      return json({ executionMode: conversation.executionMode });
+    }
     if (sub === "messages" && request.method === "POST") {
       // 压缩互斥(审计修复):compressConversation 完成时用"压缩开始时的消息快照"整体
       // 覆盖 conversation.messages——压缩窗口(LLM 摘要可达数十秒)内写入的新消息会被
@@ -443,6 +462,10 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
         return error("已有压缩正在进行，请稍候", 409, "compress_in_progress");
       }
       const body = messagesBody ?? {};
+      const mode=conversation.conversationKind === "chat" ? "chat" : body.executionMode ?? conversation.executionMode ?? "agent";
+      const modeAnnotation={type:"execution_mode",mode};
+      const activeMode=[...conversation.messages].reverse().map(n=>n.messages[n.selectIndex]).find(m=>m?.role === "ASSISTANT")?.annotations.find((a:any)=>a.type === "execution_mode") as {mode?:string}|undefined;
+      conversation.executionMode=mode;
       const assistant = findAssistant(conversation.assistantId);
       const picked = findModel(assistant.chatModelId ?? state.settings.chatModelId);
       const processedParts = applyInputRegexTransformParts((body.parts ?? []) as MessagePart[], assistant);
@@ -454,8 +477,10 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
         // 下一个模型请求边界注入(对齐 Codex pending_input),编排层在同一时刻做数据层
         // 分裂并把该项移出队列;引擎无边界可注入时它留在队列,收尾派发兜底,零丢失。
         // 消息本体不落历史(注入/派发时才落),不中止在跑流。
-        const item = enqueueMessage(conversation.id, processedParts);
-        pushSteeringMessage(conversation.id, item.id, processedParts);
+        const alreadyQueued=hasQueuedMessages(conversation.id);
+        const item = enqueueMessage(conversation.id, processedParts,{annotations:[modeAnnotation]});
+        if(!alreadyQueued && (activeMode?.mode ?? "agent") === mode)pushSteeringMessage(conversation.id, item.id, processedParts);
+        persistConversation(conversation);
         broadcastConversation(conversation);
         return json({ status: "queued", queued: true, id: item.id }, { status: 202 });
       }
@@ -466,6 +491,7 @@ export async function handleConversationRoutes(request: Request, url: URL, path:
       // 直发新消息 = 用户继续对话的明确意图:解除遗留的打断冻结,新流收尾后队列恢复自动续跑。
       releaseMessageQueueHold(conversation.id);
       const userMessage = message("USER", markOcrPendingParts(processedParts, picked.model));
+      userMessage.annotations.push(modeAnnotation);
       bumpAnalyticsMsgCount();
       const userNode = { id: id(), messages: [userMessage], selectIndex: 0 };
       conversation.messages.push(userNode);

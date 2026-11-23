@@ -77,7 +77,7 @@ export function seedConversationInjectionBinding(conversation: Conversation, ass
 
 /** init 仅在会话创建时刻生效(已存在的会话原样返回)——PC 会话首条消息才建档,
  *  工作区归属等创建期属性只能随首个建档请求进来,事后不可改绑。 */
-export function ensureConversation(idValue: string, init?: { workspaceId?: string | null }) {
+export function ensureConversation(idValue: string, init?: { workspaceId?: string | null; executionMode?: "agent" | "chat"; conversationKind?: "agent" | "chat" }) {
   let conversation = getConversation(idValue);
   if (!conversation) {
     const now = Date.now();
@@ -93,6 +93,8 @@ export function ensureConversation(idValue: string, init?: { workspaceId?: strin
       createAt: now,
       updateAt: now,
       workspaceId: init?.workspaceId ?? null,
+      conversationKind: init?.conversationKind ?? "agent",
+      executionMode: init?.conversationKind === "chat" ? "chat" : init?.executionMode ?? "agent",
       workspaceCwd: null,
       engineCompactions: null,
     };

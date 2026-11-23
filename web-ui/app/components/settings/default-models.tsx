@@ -8,10 +8,12 @@ import {
   Brain,
   FileClock,
   FileImage,
+  Gauge,
   Globe,
   Layers,
   NotebookText,
   RefreshCw,
+  ScanText,
   Settings2,
   Sparkles,
   TimerReset,
@@ -31,12 +33,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~
 import { getModelDisplayName } from "~/lib/display";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
+import { Input } from "~/components/ui/input";
 import { useAutosaveDraft } from "~/hooks/use-autosave-draft";
 import { patchSettingsLocal } from "~/lib/settings-patch";
 import { AutosaveStatusRow } from "~/components/settings/autosave-status";
 import api from "~/services/api";
+import type { ContextBudgetConfig, ContextToolsConfig, ResultClipConfig } from "@server/foundation/types/settings";
 import type { Settings } from "~/types";
 import {
+  PasswordInput,
+  SettingsFold,
   SettingsGroup,
   SettingsRow,
   SettingsRows,
@@ -184,6 +190,10 @@ export function DefaultModelsSection({
     titleGenerationEnabled: boolean;
     translateModeId: string;
     ocrModelId: string;
+    // DeepSeek 官方 OCR(挂在 OCR 场景档下面的可选引擎,PC-only)
+    deepseekOcrEnabled: boolean;
+    deepseekOcrApiKey: string;
+    deepseekOcrPurpose: string;
     compressModelId: string;
     chatAutoCompact: boolean;
     promptOptimizeModelId: string;
@@ -211,6 +221,9 @@ export function DefaultModelsSection({
     titleGenerationEnabled: settings.titleGenerationEnabled !== false,
     translateModeId: textValue(settings.translateModeId),
     ocrModelId: textValue(settings.ocrModelId),
+    deepseekOcrEnabled: settings.deepseekOcrEnabled === true,
+    deepseekOcrApiKey: textValue(settings.deepseekOcrApiKey),
+    deepseekOcrPurpose: textValue(settings.deepseekOcrPurpose) || "text_recognition",
     compressModelId: textValue(settings.compressModelId),
     chatAutoCompact: settings.chatAutoCompact === true,
     promptOptimizeModelId: textValue(settings.promptOptimizeModelId),
@@ -226,12 +239,12 @@ export function DefaultModelsSection({
   } satisfies Draft);
   const [editingPrompt, setEditingPrompt] = React.useState<PromptKey | null>(null);
   // 压缩 prompt 对话框的引擎标签(压缩 prompt 不是公共的:对话引擎可编辑,工作区
-  // 引擎 pi 用原生 prompt 只读展示)。其余 prompt 无引擎差异,不显示标签。
-  const [compressEngineTab, setCompressEngineTab] = React.useState<"chat" | "pi">("chat");
+  // Agent 内核用原生 prompt 只读展示)。其余 prompt 无引擎差异,不显示标签。
+  const [compressEngineTab, setCompressEngineTab] = React.useState<"chat" | "kernel">("chat");
   // 快速模型卡只有一个「编辑 Prompt」入口,但标题/建议是两条独立提示词 → 对话框内切换编辑,
   // 与压缩 prompt 的分引擎切换同构。fastTab 只在编辑快速模型(promptKey=titlePrompt/suggestionPrompt)时生效。
   const [fastTab, setFastTab] = React.useState<"title" | "suggestion">("title");
-  const [piCompactionPrompt, setPiCompactionPrompt] = React.useState<string | null>(null);
+  const [kernelCompactionPrompt, setKernelCompactionPrompt] = React.useState<string | null>(null);
   // 对话框内实际编辑的 prompt 键:快速模型卡 → 跟随 fastTab;其余卡 → 卡自身的 promptKey。
   const activePromptKey: PromptKey | null =
     editingPrompt === "titlePrompt" || editingPrompt === "suggestionPrompt"
@@ -249,22 +262,22 @@ export function DefaultModelsSection({
         ? "enableSuggestion"
         : null;
   React.useEffect(() => {
-    // 懒加载:首次打开压缩 prompt 对话框才取 pi 原生 prompt(静态文本,取一次缓存)。
-    if (editingPrompt !== "compressPrompt" || piCompactionPrompt !== null) return;
+    // 懒加载:首次打开压缩 prompt 对话框才取内核原生 prompt(静态文本,取一次缓存)。
+    if (editingPrompt !== "compressPrompt" || kernelCompactionPrompt !== null) return;
     let cancelled = false;
     api
       .get<{ engines: Array<{ engine: string; prompt: string }> }>("settings/engine-compaction-prompts")
       .then((data) => {
         if (cancelled) return;
-        setPiCompactionPrompt(data.engines.find((item) => item.engine === "pi")?.prompt ?? "");
+        setKernelCompactionPrompt(data.engines.find((item) => item.engine === "kernel")?.prompt ?? "");
       })
       .catch(() => {
-        if (!cancelled) setPiCompactionPrompt("");
+        if (!cancelled) setKernelCompactionPrompt("");
       });
     return () => {
       cancelled = true;
     };
-  }, [editingPrompt, piCompactionPrompt]);
+  }, [editingPrompt, kernelCompactionPrompt]);
   // 防抖保存走共享三件套 hook:卸载(切页/关设置)时补发未落盘的编辑,挂载不发请求,
   // 状态行反映真实保存状态。后端 settings/default-models 按字段合并,整份草稿提交即可。
   const autosave = useAutosaveDraft(
@@ -277,6 +290,57 @@ export function DefaultModelsSection({
   const patchDraft = (patch: Partial<Draft>) => {
     autosave.markDirty();
     setDraft((current) => ({ ...current, ...patch }));
+  };
+  // 上下文预算(PC 专属):独立端点即时保存——它不属于「场景模型」草稿,不能混进
+  // settings/default-models 的整份提交。乐观写入走 patchSettingsLocal,SSE 回推随后对齐。
+  const budgetConfig: ContextBudgetConfig = settings.contextBudget ?? {
+    enabled: false,
+    toolAgingEnabled: false,
+    toolAgingKeepTurns: 2,
+    toolAgingExcerptChars: 200,
+  };
+  const [budgetAdvancedOpen, setBudgetAdvancedOpen] = React.useState(false);
+  const patchBudget = (patch: Partial<ContextBudgetConfig>) => {
+    patchSettingsLocal({ contextBudget: { ...budgetConfig, ...patch } });
+    api
+      .post("settings/context-budget", patch)
+      .catch((error) => toast.error((error as Error).message || t("settings:models.autosave_failed")));
+  };
+  // 模型驱动上下文工具面(PC 专属,仅工作区会话生效):与上下文预算同一张卡、同一套
+  // 独立端点即时保存纪律。默认关 → 一个工具都不注入,出站请求与引入前逐字节一致。
+  const contextToolsConfig: ContextToolsConfig = settings.contextTools ?? {
+    enabled: false,
+    nudgeEnabled: true,
+    nudgeGrowthTokens: 8000,
+    readOriginalMaxTokens: 8000,
+  };
+  const [contextToolsAdvancedOpen, setContextToolsAdvancedOpen] = React.useState(false);
+  const patchContextTools = (patch: Partial<ContextToolsConfig>) => {
+    patchSettingsLocal({ contextTools: { ...contextToolsConfig, ...patch } });
+    api
+      .post("settings/context-tools", patch)
+      .catch((error) => toast.error((error as Error).message || t("settings:models.autosave_failed")));
+  };
+  // S-F1 工具结果头尾裁剪(PC 专属、默认开):每条工具结果进模型前砍掉中段,原文不动。
+  // 与预算/工具面同卡同纪律:独立端点即时保存,乐观写入走 patchSettingsLocal。
+  const resultClipConfig: ResultClipConfig = settings.resultClip ?? {
+    enabled: true,
+    thresholdChars: 8192,
+    headChars: 4096,
+    tailChars: 1024,
+  };
+  const [resultClipAdvancedOpen, setResultClipAdvancedOpen] = React.useState(false);
+  const patchResultClip = (patch: Partial<ResultClipConfig>) => {
+    const next = { ...resultClipConfig, ...patch };
+    // 写入侧同一硬约束:头 + 标记上界 + 尾 ≤ 阈值,否则拒绝(后端 400 会回吐原因)。
+    if (next.headChars + 200 + next.tailChars > next.thresholdChars) {
+      toast.error(t("settings:models.feature.compress.clip_invalid"));
+      return;
+    }
+    patchSettingsLocal({ resultClip: next });
+    api
+      .post("settings/result-clip", patch)
+      .catch((error) => toast.error((error as Error).message || t("settings:models.autosave_failed")));
   };
   // 每个场景档位的候选模型集合:聊天类场景共用 allModels(已排除嵌入/重排),
   // 图像/嵌入/重排各自按能力点名。抽成函数是为了让行渲染也能拿到候选数,
@@ -500,27 +564,350 @@ export function DefaultModelsSection({
                     </>
                   }
                 />
+                {/* DeepSeek 官方 OCR:用户拍板的落点就是「OCR 模型」这一张卡,不另开设置页。
+                    开启后图片走官方 /v1/tools/ocr,文档附件只在「本地读不出字」时才升级;
+                    上面那个「OCR 模型」下拉此时退为官方接口失败的回落引擎,仍可照常配置。
+                    关闭时本卡行为与引入前逐字一致。按页计费(1.5 元/1000 页)必须写在描述里,
+                    不能等用户开完才发现会花钱。 */}
+                {feature.modelKey === "ocrModelId" ? (
+                  <React.Fragment>
+                    <SettingsRow
+                      label={
+                        <span className="flex items-center gap-2">
+                          <ScanText className="size-4 shrink-0 text-[var(--ds-icon)]" />
+                          {t("settings:models.feature.ocr.deepseek_title")}
+                        </span>
+                      }
+                      description={
+                        <span className="block pl-6">{t("settings:models.feature.ocr.deepseek_desc")}</span>
+                      }
+                      control={
+                        <Switch
+                          checked={draft.deepseekOcrEnabled}
+                          onCheckedChange={(deepseekOcrEnabled) => patchDraft({ deepseekOcrEnabled })}
+                          aria-label={t("settings:models.feature.ocr.deepseek_title")}
+                        />
+                      }
+                    />
+                    {draft.deepseekOcrEnabled ? (
+                      <>
+                        <SettingsRow
+                          label={
+                            <span className="flex items-center gap-2">
+                              <span className="size-4 shrink-0" aria-hidden="true" />
+                              {t("settings:models.feature.ocr.deepseek_key_title")}
+                            </span>
+                          }
+                          description={
+                            <span className="block pl-6">{t("settings:models.feature.ocr.deepseek_key_desc")}</span>
+                          }
+                          control={
+                            <div className="w-60">
+                              <PasswordInput
+                                value={draft.deepseekOcrApiKey}
+                                onChange={(deepseekOcrApiKey) => patchDraft({ deepseekOcrApiKey })}
+                                placeholder="sk-..."
+                                aria-label={t("settings:models.feature.ocr.deepseek_key_title")}
+                              />
+                            </div>
+                          }
+                        />
+                        <SettingsRow
+                          label={
+                            <span className="flex items-center gap-2">
+                              <span className="size-4 shrink-0" aria-hidden="true" />
+                              {t("settings:models.feature.ocr.deepseek_purpose_title")}
+                            </span>
+                          }
+                          description={
+                            <span className="block pl-6">{t("settings:models.feature.ocr.deepseek_purpose_desc")}</span>
+                          }
+                          control={
+                            <div className="w-60">
+                              <Select
+                                value={draft.deepseekOcrPurpose}
+                                onValueChange={(deepseekOcrPurpose) => patchDraft({ deepseekOcrPurpose })}
+                              >
+                                <SelectTrigger className="w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="text_recognition">{t("settings:models.feature.ocr.purpose_text")}</SelectItem>
+                                  <SelectItem value="rich_layout_recognition">{t("settings:models.feature.ocr.purpose_rich")}</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          }
+                        />
+                      </>
+                    ) : null}
+                  </React.Fragment>
+                ) : null}
                 {/* 自动压缩是压缩模型的运行策略,跟在同一张卡里而不是另开设置页:
                     用户读「上下文压缩」时顺带就能决定要不要让它自动跑。 */}
                 {feature.modelKey === "compressModelId" ? (
-                  <SettingsRow
-                    label={
-                      <span className="flex items-center gap-2">
-                        <TimerReset className="size-4 shrink-0 text-[var(--ds-icon)]" />
-                        {t("settings:models.feature.compress.auto_title")}
-                      </span>
-                    }
-                    description={
-                      <span className="block pl-6">{t("settings:models.feature.compress.auto_desc")}</span>
-                    }
-                    control={
-                      <Switch
-                        checked={draft.chatAutoCompact}
-                        onCheckedChange={(checked) => patchDraft({ chatAutoCompact: checked })}
-                        aria-label={t("settings:models.feature.compress.auto_title")}
-                      />
-                    }
-                  />
+                  <React.Fragment>
+                    <SettingsRow
+                      label={
+                        <span className="flex items-center gap-2">
+                          <TimerReset className="size-4 shrink-0 text-[var(--ds-icon)]" />
+                          {t("settings:models.feature.compress.auto_title")}
+                        </span>
+                      }
+                      description={
+                        <span className="block pl-6">{t("settings:models.feature.compress.auto_desc")}</span>
+                      }
+                      control={
+                        <Switch
+                          checked={draft.chatAutoCompact}
+                          onCheckedChange={(checked) => patchDraft({ chatAutoCompact: checked })}
+                          aria-label={t("settings:models.feature.compress.auto_title")}
+                        />
+                      }
+                    />
+                    {/* 上下文预算与工具输出老化:同样挂在「上下文压缩」卡里——三者都在回答
+                        「上下文满了怎么办」。总开关关闭时请求逐字节与引入前一致。 */}
+                    <SettingsRow
+                      label={
+                        <span className="flex items-center gap-2">
+                          <Gauge className="size-4 shrink-0 text-[var(--ds-icon)]" />
+                          {t("settings:models.feature.compress.budget_title")}
+                        </span>
+                      }
+                      description={
+                        <span className="block pl-6">{t("settings:models.feature.compress.budget_desc")}</span>
+                      }
+                      control={
+                        <Switch
+                          checked={budgetConfig.enabled}
+                          onCheckedChange={(checked) => patchBudget({ enabled: checked })}
+                          aria-label={t("settings:models.feature.compress.budget_title")}
+                        />
+                      }
+                    />
+                    {budgetConfig.enabled ? (
+                      <div className="px-4 pb-4 pl-10">
+                        <SettingsFold
+                          id="context-budget-advanced"
+                          title={t("settings:models.feature.compress.budget_advanced")}
+                          summary={budgetConfig.toolAgingEnabled ? t("settings:models.feature.compress.budget_summary_on") : undefined}
+                          open={budgetAdvancedOpen}
+                          onOpenChange={setBudgetAdvancedOpen}
+                        >
+                          <SettingsRows>
+                            <SettingsRow
+                              label={t("settings:models.feature.compress.budget_aging_title")}
+                              description={t("settings:models.feature.compress.budget_aging_desc")}
+                              control={
+                                <Switch
+                                  checked={budgetConfig.toolAgingEnabled}
+                                  onCheckedChange={(checked) => patchBudget({ toolAgingEnabled: checked })}
+                                  aria-label={t("settings:models.feature.compress.budget_aging_title")}
+                                />
+                              }
+                            />
+                            <SettingsRow
+                              label={t("settings:models.feature.compress.budget_keep_title")}
+                              description={t("settings:models.feature.compress.budget_keep_desc")}
+                              control={
+                                <Input
+                                  className="w-24"
+                                  inputMode="numeric"
+                                  disabled={!budgetConfig.toolAgingEnabled}
+                                  aria-label={t("settings:models.feature.compress.budget_keep_title")}
+                                  value={String(budgetConfig.toolAgingKeepTurns)}
+                                  onChange={(event) => {
+                                    const n = Math.round(Number(event.target.value));
+                                    patchBudget({ toolAgingKeepTurns: Number.isFinite(n) ? Math.min(16, Math.max(1, n)) : 2 });
+                                  }}
+                                />
+                              }
+                            />
+                            <SettingsRow
+                              label={t("settings:models.feature.compress.budget_excerpt_title")}
+                              description={t("settings:models.feature.compress.budget_excerpt_desc")}
+                              control={
+                                <Input
+                                  className="w-24"
+                                  inputMode="numeric"
+                                  disabled={!budgetConfig.toolAgingEnabled}
+                                  aria-label={t("settings:models.feature.compress.budget_excerpt_title")}
+                                  value={String(budgetConfig.toolAgingExcerptChars)}
+                                  onChange={(event) => {
+                                    const n = Math.round(Number(event.target.value));
+                                    patchBudget({ toolAgingExcerptChars: Number.isFinite(n) ? Math.min(2000, Math.max(0, n)) : 200 });
+                                  }}
+                                />
+                              }
+                            />
+                          </SettingsRows>
+                        </SettingsFold>
+                      </div>
+                    ) : null}
+                    {/* S7:把「折哪一段、摘要怎么写」交给模型自己裁决(仅工作区会话)。
+                        原文只增不删:折叠只改发送面,随时可逐字召回。 */}
+                    <SettingsRow
+                      label={
+                        <span className="flex items-center gap-2">
+                          <Layers className="size-4 shrink-0 text-[var(--ds-icon)]" />
+                          {t("settings:models.feature.compress.tools_title")}
+                        </span>
+                      }
+                      description={
+                        <span className="block pl-6">{t("settings:models.feature.compress.tools_desc")}</span>
+                      }
+                      control={
+                        <Switch
+                          checked={contextToolsConfig.enabled}
+                          onCheckedChange={(checked) => patchContextTools({ enabled: checked })}
+                          aria-label={t("settings:models.feature.compress.tools_title")}
+                        />
+                      }
+                    />
+                    {contextToolsConfig.enabled ? (
+                      <React.Fragment>
+                        <SettingsRow
+                          label={t("settings:models.feature.compress.tools_nudge_title")}
+                          description={t("settings:models.feature.compress.tools_nudge_desc")}
+                          control={
+                            <Switch
+                              checked={contextToolsConfig.nudgeEnabled}
+                              onCheckedChange={(checked) => patchContextTools({ nudgeEnabled: checked })}
+                              aria-label={t("settings:models.feature.compress.tools_nudge_title")}
+                            />
+                          }
+                        />
+                        <div className="px-4 pb-4 pl-10">
+                          <SettingsFold
+                            id="context-tools-advanced"
+                            title={t("settings:models.feature.compress.tools_advanced")}
+                            open={contextToolsAdvancedOpen}
+                            onOpenChange={setContextToolsAdvancedOpen}
+                          >
+                            <SettingsRows>
+                              <SettingsRow
+                                label={t("settings:models.feature.compress.tools_nudge_gate_title")}
+                                description={t("settings:models.feature.compress.tools_nudge_gate_desc")}
+                                control={
+                                  <Input
+                                    className="w-28"
+                                    inputMode="numeric"
+                                    disabled={!contextToolsConfig.nudgeEnabled}
+                                    aria-label={t("settings:models.feature.compress.tools_nudge_gate_title")}
+                                    value={String(contextToolsConfig.nudgeGrowthTokens)}
+                                    onChange={(event) => {
+                                      const n = Math.round(Number(event.target.value));
+                                      patchContextTools({ nudgeGrowthTokens: Number.isFinite(n) ? Math.min(200000, Math.max(500, n)) : 8000 });
+                                    }}
+                                  />
+                                }
+                              />
+                              <SettingsRow
+                                label={t("settings:models.feature.compress.tools_read_budget_title")}
+                                description={t("settings:models.feature.compress.tools_read_budget_desc")}
+                                control={
+                                  <Input
+                                    className="w-28"
+                                    inputMode="numeric"
+                                    aria-label={t("settings:models.feature.compress.tools_read_budget_title")}
+                                    value={String(contextToolsConfig.readOriginalMaxTokens)}
+                                    onChange={(event) => {
+                                      const n = Math.round(Number(event.target.value));
+                                      patchContextTools({ readOriginalMaxTokens: Number.isFinite(n) ? Math.min(100000, Math.max(500, n)) : 8000 });
+                                    }}
+                                  />
+                                }
+                              />
+                            </SettingsRows>
+                          </SettingsFold>
+                        </div>
+                      </React.Fragment>
+                    ) : null}
+                    {/* S-F1:工具结果头尾裁剪。默认开——阈值内逐字节不动,开关关闭时
+                        发送面与引入前一致。 */}
+                    <SettingsRow
+                      label={
+                        <span className="flex items-center gap-2">
+                          <Gauge className="size-4 shrink-0 text-[var(--ds-icon)]" />
+                          {t("settings:models.feature.compress.clip_title")}
+                        </span>
+                      }
+                      description={
+                        <span className="block pl-6">{t("settings:models.feature.compress.clip_desc")}</span>
+                      }
+                      control={
+                        <Switch
+                          checked={resultClipConfig.enabled}
+                          onCheckedChange={(checked) => patchResultClip({ enabled: checked })}
+                          aria-label={t("settings:models.feature.compress.clip_title")}
+                        />
+                      }
+                    />
+                    {resultClipConfig.enabled ? (
+                      <div className="px-4 pb-4 pl-10">
+                        <SettingsFold
+                          id="result-clip-advanced"
+                          title={t("settings:models.feature.compress.clip_advanced")}
+                          summary={t("settings:models.feature.compress.clip_summary", {
+                            threshold: resultClipConfig.thresholdChars,
+                          })}
+                          open={resultClipAdvancedOpen}
+                          onOpenChange={setResultClipAdvancedOpen}
+                        >
+                          <SettingsRows>
+                            <SettingsRow
+                              label={t("settings:models.feature.compress.clip_threshold_title")}
+                              description={t("settings:models.feature.compress.clip_threshold_desc")}
+                              control={
+                                <Input
+                                  className="w-28"
+                                  inputMode="numeric"
+                                  aria-label={t("settings:models.feature.compress.clip_threshold_title")}
+                                  value={String(resultClipConfig.thresholdChars)}
+                                  onChange={(event) => {
+                                    const n = Math.round(Number(event.target.value));
+                                    if (Number.isFinite(n)) patchResultClip({ thresholdChars: Math.min(1_000_000, Math.max(1000, n)) });
+                                  }}
+                                />
+                              }
+                            />
+                            <SettingsRow
+                              label={t("settings:models.feature.compress.clip_head_title")}
+                              description={t("settings:models.feature.compress.clip_head_desc")}
+                              control={
+                                <Input
+                                  className="w-28"
+                                  inputMode="numeric"
+                                  aria-label={t("settings:models.feature.compress.clip_head_title")}
+                                  value={String(resultClipConfig.headChars)}
+                                  onChange={(event) => {
+                                    const n = Math.round(Number(event.target.value));
+                                    if (Number.isFinite(n)) patchResultClip({ headChars: Math.min(1_000_000, Math.max(100, n)) });
+                                  }}
+                                />
+                              }
+                            />
+                            <SettingsRow
+                              label={t("settings:models.feature.compress.clip_tail_title")}
+                              description={t("settings:models.feature.compress.clip_tail_desc")}
+                              control={
+                                <Input
+                                  className="w-28"
+                                  inputMode="numeric"
+                                  aria-label={t("settings:models.feature.compress.clip_tail_title")}
+                                  value={String(resultClipConfig.tailChars)}
+                                  onChange={(event) => {
+                                    const n = Math.round(Number(event.target.value));
+                                    if (Number.isFinite(n)) patchResultClip({ tailChars: Math.min(1_000_000, Math.max(0, n)) });
+                                  }}
+                                />
+                              }
+                            />
+                          </SettingsRows>
+                        </SettingsFold>
+                      </div>
+                    ) : null}
+                  </React.Fragment>
                 ) : null}
               </React.Fragment>
             );
@@ -550,21 +937,21 @@ export function DefaultModelsSection({
               ) : null}
             </div>
             <DialogDescription>
-              {activePromptKey === "compressPrompt" && compressEngineTab === "pi"
-                ? t("settings:models.compress_engine.pi_note")
+              {activePromptKey === "compressPrompt" && compressEngineTab === "kernel"
+                ? "Agent 内核在上下文接近上限时使用此内置摘要指令。会话历史压缩使用另一页的可编辑指令。"
                 : `${t("settings:models.variables_label")}${activePrompt?.variables ?? ""}`}
             </DialogDescription>
           </DialogHeader>
           {activePromptKey === "compressPrompt" ? (
-            // 压缩 prompt 分引擎:对话引擎可编辑;工作区引擎(pi)原生内置、只读。
+            // 会话历史压缩指令可编辑；Agent 内核的摘要指令内置、只读。
             // 其余 prompt 无引擎差异,不显示此切换。
             <SegmentedTabs
               size="sm"
               className="self-start"
               aria-label={activePrompt?.title}
-              items={(["chat", "pi"] as const).map((tab) => ({
+              items={(["chat", "kernel"] as const).map((tab) => ({
                 value: tab,
-                label: t(`settings:models.compress_engine.${tab}`),
+                label: tab === "kernel" ? "Agent 内核" : t("settings:models.compress_engine.chat"),
               }))}
               value={compressEngineTab}
               onChange={setCompressEngineTab}
@@ -585,9 +972,9 @@ export function DefaultModelsSection({
             />
           ) : null}
           {activePromptKey ? (
-            activePromptKey === "compressPrompt" && compressEngineTab === "pi" ? (
+            activePromptKey === "compressPrompt" && compressEngineTab === "kernel" ? (
               <Textarea
-                value={piCompactionPrompt ?? "…"}
+                value={kernelCompactionPrompt ?? "…"}
                 readOnly
                 className="h-[420px] font-mono text-xs opacity-80"
               />
@@ -600,7 +987,7 @@ export function DefaultModelsSection({
             )
           ) : null}
           <DialogFooter>
-            {activePromptKey && !(activePromptKey === "compressPrompt" && compressEngineTab === "pi") ? (
+            {activePromptKey && !(activePromptKey === "compressPrompt" && compressEngineTab === "kernel") ? (
               <Button
                 type="button"
                 variant="tertiary"

@@ -9,7 +9,9 @@ import {
   COMPRESS_RATIO_WARN,
   compressRatioToTargetTokens,
   CONTEXT_WARNING_RESERVE_TOKENS,
+  contextWarningReserveFallback,
   compactionAfterMessage,
+  compactionAnchorEntries,
   compactionDividerBelow,
   contextWarningPercent,
   estimateCompactionTokens,
@@ -104,6 +106,31 @@ describe("contextWarningPercent(上下文即将用完提示)", () => {
       contextWarningPercent({ promptTokens: 10_000, completionTokens: 0, contextLimit: 16_000 }),
     ).toBeNull();
   });
+
+  it("S3:服务端下发的预留优先,与后端自动压缩触发线同一个数", () => {
+    // 8k 窗口 + 2048 预留 → 阈值 6144。旧口径写死 16384 时这里阈值 ≤0,永不提示。
+    expect(contextWarningPercent({ promptTokens: 6_000, completionTokens: 0, contextLimit: 8_192 }, null, 2_048)).toBeNull();
+    expect(contextWarningPercent({ promptTokens: 6_145, completionTokens: 0, contextLimit: 8_192 }, null, 2_048)).toBe(
+      Math.round((6_145 / 8_192) * 100),
+    );
+    // 大窗口:服务端预留 32768 比回退值 16384 大 → 更早提示(与后端 83.6% 触发线一致)。
+    const usage = { promptTokens: 170_000, completionTokens: 0, contextLimit: 200_000 };
+    expect(contextWarningPercent(usage)).toBeNull(); // 回退预留 16384 → 阈值 183624,未越线
+    expect(contextWarningPercent(usage, null, 32_768)).toBe(85);
+    // 非法/缺省预留回退到按窗口比例,而不是当成 0。
+    expect(contextWarningPercent(usage, null, 0)).toBeNull();
+    expect(contextWarningPercent(usage, null, null)).toBeNull();
+  });
+
+  it("S3:无服务端值时的回退 = max(2048, min(16384, 窗口 1/4))", () => {
+    expect(contextWarningReserveFallback(8_192)).toBe(2_048);
+    expect(contextWarningReserveFallback(32_768)).toBe(8_192);
+    expect(contextWarningReserveFallback(200_000)).toBe(CONTEXT_WARNING_RESERVE_TOKENS);
+    // 小窗口模型从此**有**提示(旧口径 16k 预留让 8k 窗口永不提示)。
+    expect(contextWarningPercent({ promptTokens: 7_000, completionTokens: 0, contextLimit: 8_192 })).toBe(
+      Math.round((7_000 / 8_192) * 100),
+    );
+  });
 });
 
 describe("压缩记录解析与锚点映射(详情卡数据面)", () => {
@@ -193,11 +220,15 @@ describe("压缩记录解析与锚点映射(详情卡数据面)", () => {
     expect(latestCompactionPlacement(null, nodes)).toBeNull();
   });
 
-  it("估算口径与后端 estimateTokens 一致(CJK 0.9 / 其他 1/4,至少 1)", () => {
+  it("估算口径与后端 estimateTokens 一致(CJK 1/字 / 其他 1/4,至少 1)", () => {
     expect(estimateCompactionTokens("")).toBe(1);
     expect(estimateCompactionTokens("abcd")).toBe(1);
     expect(estimateCompactionTokens("你好")).toBe(2);
     expect(estimateCompactionTokens("你好abcd")).toBe(3);
+    // 假名/谚文/CJK 标点必须与后端同口径,否则详情卡与压缩判定打架。
+    expect(estimateCompactionTokens("こんにちは")).toBe(5);
+    expect(estimateCompactionTokens("안녕하세요")).toBe(5);
+    expect(estimateCompactionTokens("。、《》")).toBe(4);
   });
 });
 
@@ -288,5 +319,84 @@ describe("压缩比例(滑杆取值)", () => {
     expect(compressRatioToTargetTokens(40, 0)).toBeNull();
     expect(compressRatioToTargetTokens(40, -100)).toBeNull();
     expect(compressRatioToTargetTokens(40, Number.NaN)).toBeNull();
+  });
+});
+
+describe("S5/S6 块化记录的展示面(并列块 + 被吸收块不再画线)", () => {
+  const message = (id: string) => ({ id }) as UIMessage;
+  const node = (selectedId: string, ...otherIds: string[]): CompactionTimelineNode => ({
+    messages: [selectedId, ...otherIds].map(message),
+    selectedId,
+  });
+  const block = (
+    cutMessageId: string,
+    startMessageId: string,
+    summary: string,
+    extra: Record<string, unknown> = {},
+  ) => ({ cutMessageId, startMessageId, summary, tokensBefore: 100, ...extra });
+
+  it("解析新字段;active=false 的块直接过滤(记录仍在库里,只是不再是记忆边界)", () => {
+    const parsed = parseCompactionRecords([
+      block("m3", "m1", "块0", { id: "r0", tier: 1, active: true }),
+      block("m6", "m3", "块1", { id: "r1", tier: 2, consumedRecordIds: ["r0", 7, ""] }),
+      block("m9", "m6", "被吸收", { id: "r2", active: false }),
+      block("m9", "m6", "坏字段", { tier: "2", id: "", startMessageId: "" }),
+    ]);
+    expect(parsed).toHaveLength(3);
+    expect(parsed[0]).toEqual({
+      cutMessageId: "m3", startMessageId: "m1", summary: "块0", tokensBefore: 100, id: "r0", tier: 1,
+    });
+    expect(parsed[1]!.tier).toBe(2);
+    expect(parsed[1]!.consumedRecordIds).toEqual(["r0"]);
+    expect(parsed[2]!.tier).toBeUndefined();
+    expect(parsed[2]!.id).toBeUndefined();
+    expect(parsed[2]!.startMessageId).toBeUndefined();
+  });
+
+  it("并列块:按锚点顺序编号,层级/总数下发给折叠卡", () => {
+    const nodes = [node("m1"), node("m2"), node("m3"), node("m4"), node("m5"), node("m6"), node("m7")];
+    const raw = [
+      block("m3", "m1", "块0摘要", { id: "r0" }),
+      block("m6", "m3", "块1摘要", { id: "r1", tier: 2 }),
+    ];
+    const entries = compactionAnchorEntries(raw, nodes);
+    expect(entries.map((entry) => entry.anchorId)).toEqual(["m2", "m5"]);
+    expect(entries.map((entry) => entry.info.blockOrdinal)).toEqual([1, 2]);
+    expect(entries.map((entry) => entry.info.blockTotal)).toEqual([2, 2]);
+    expect(entries.map((entry) => entry.info.tier)).toEqual([1, 2]);
+    // Map 出口与数组出口同源:逐块详情弹窗按 anchorId 取到的就是同一份 info。
+    const anchors = buildCompactionAnchors(raw, nodes);
+    expect(anchors.get("m2")).toEqual(entries[0]!.info);
+    expect(anchors.get("m5")).toEqual(entries[1]!.info);
+    // 折叠范围仍取最后一块的切点(它之前的原文全部已被摘要覆盖)。
+    const placement = latestCompactionPlacement(raw, nodes)!;
+    expect(placement.anchorId).toBe("m5");
+    expect(placement.cutNodeIndex).toBe(5);
+  });
+
+  it("S6 蒸馏后:被吸收块不画线不出卡,折叠范围与详情都落到上层块", () => {
+    const nodes = [node("m1"), node("m2"), node("m3"), node("m4"), node("m5"), node("m6"), node("m7")];
+    const raw = [
+      block("m3", "m1", "块0", { id: "r0", active: false }),
+      block("m6", "m3", "块1", { id: "r1", active: false }),
+      block("m6", "m1", "上层摘要", { id: "r2", tier: 2, consumedRecordIds: ["r0", "r1"] }),
+    ];
+    const entries = compactionAnchorEntries(raw, nodes);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.anchorId).toBe("m5");
+    expect(entries[0]!.info.record.summary).toBe("上层摘要");
+    expect(entries[0]!.info.blockTotal).toBe(1);
+    expect(buildCompactionAnchors(raw, nodes).has("m2")).toBe(false);
+    expect(latestCompactionPlacement(raw, nodes)!.record.cutMessageId).toBe("m6");
+  });
+
+  it("v1 老记录:层级按 1、单块编号,展示面与引入前一致", () => {
+    const nodes = [node("m1"), node("m2"), node("m3")];
+    const entries = compactionAnchorEntries([{ cutMessageId: "m2", summary: "旧摘要", tokensBefore: 100 }], nodes);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.info.tier).toBe(1);
+    expect(entries[0]!.info.blockOrdinal).toBe(1);
+    expect(entries[0]!.info.blockTotal).toBe(1);
+    expect(entries[0]!.info.previousSummaryTokens).toBe(0);
   });
 });

@@ -51,6 +51,10 @@ export function BackupSection({
   const exportProgress =
     exportTotalBytes > 0 ? Math.round((exportedBytes / exportTotalBytes) * 100) : 0;
   const [schemaStatus, setSchemaStatus] = useSchemaStatus();
+  // S5:导入体积体检结果(只读报告)。最近一次导入的会话体积,按 estTokens 倒序。
+  const [importAudit, setImportAudit] = React.useState<
+    Array<{ conversationId: string; title: string; messages: number; estTokens: number; overWindow: boolean }>
+  >([]);
   // 远端备份不含对话的提示徽标:只在 APP端适配卡启用且确认未注册时出现(未知态不画)。
   const chatUnsyncable =
     ANDROID_COMPAT_CARD_ENABLED && schemaStatus != null && !schemaStatus.hasAndroidSchema;
@@ -306,6 +310,7 @@ export function BackupSection({
         source?: string;
         summary?: string[];
         warnings?: string[];
+        contextAudit?: Array<{ conversationId: string; title: string; messages: number; estTokens: number; overWindow: boolean }>;
         settings: Settings;
       }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -374,6 +379,8 @@ export function BackupSection({
       for (const warning of result.warnings ?? []) {
         toast.warning(warning, { duration: 15000 });
       }
+      // 体检只展示体量最大的前 8 条;列表就地保留,用户可切页回来再看。
+      setImportAudit((result.contextAudit ?? []).slice(0, 8));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("settings:data.import_failed"));
     } finally {
@@ -458,6 +465,35 @@ export function BackupSection({
               percent={importPhase === "uploading" ? importProgress : null}
               hint={importPhase === "processing" ? t("settings:data.extract_slow") : undefined}
             />
+          ) : null}
+          {/* S5:导入体检——只报告不改数据。超窗会话接着聊会把全部历史一次注入。 */}
+          {importAudit.length > 0 ? (
+            <div className="mt-3 rounded-[var(--ds-radius-md)] border border-[var(--ds-divider)] px-3 py-2">
+              <div className="text-xs font-medium text-[var(--ds-text-secondary)]">
+                {t("settings:data.import_audit_title")}
+              </div>
+              <ul className="mt-1.5 space-y-1">
+                {importAudit.map((entry) => (
+                  <li key={entry.conversationId} className="flex items-baseline justify-between gap-3 text-xs">
+                    <span className="min-w-0 flex-1 truncate text-[var(--ds-text)]">
+                      {entry.title || entry.conversationId}
+                    </span>
+                    <span
+                      className={
+                        entry.overWindow
+                          ? "shrink-0 text-[var(--ds-warning)]"
+                          : "shrink-0 text-[var(--ds-text-tertiary)]"
+                      }
+                    >
+                      {entry.estTokens >= 1000 ? `${Math.round(entry.estTokens / 1000)}K` : String(entry.estTokens)}
+                      {" · "}
+                      {t("settings:data.import_audit_messages", { count: entry.messages })}
+                      {entry.overWindow ? ` · ${t("settings:data.import_audit_over")}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </SettingsGroup>
         {/* 本地与云端之间:Kelivo 导入属于"拿一份外部备份进来",与本地导入同组,

@@ -5,6 +5,11 @@ import type { State } from "../foundation/types";
 import type { Settings } from "../foundation/types/settings";
 import { defaultImAccess } from "../foundation/types/settings/im-access";
 import { defaultAgentLoopConfig } from "../foundation/types/settings/agent-loop-config";
+import { defaultContextBudgetConfig } from "../foundation/types/settings/context-budget-config";
+import { defaultContextToolsConfig } from "../foundation/types/settings/context-tools-config";
+import { defaultDebugServerConfig } from "../foundation/types/settings/debug-server-config";
+import { defaultPtcConfig } from "../foundation/types/settings/ptc-config";
+import { defaultResultClipConfig } from "../foundation/types/settings/result-clip-config";
 import { defaultSubagentConfig } from "../foundation/types/settings/subagent-config";
 import { defaultWorkspaceToolsConfig } from "../foundation/types/settings/workspace-tools-config";
 import { id } from "../foundation/utils";
@@ -120,6 +125,11 @@ export function defaultSettings(): Settings {
     translateThinkingBudget: 0,
     imageGenerationModelId: "",
     ocrModelId: "",
+    // DeepSeek 官方 OCR(PC-only,默认关):关闭时 OCR 只走 ocrModelId 视觉模型,与引入前逐字一致。
+    // 开启即按页计费(1.5 元/1000 页),所以绝不默认开、也绝不默认带上 Key。
+    deepseekOcrEnabled: false,
+    deepseekOcrApiKey: "",
+    deepseekOcrPurpose: "text_recognition",
     compressModelId: DEFAULT_AUTO_MODEL_ID,
     // 自动压缩默认关:它会静默调用压缩模型(可能计费),只在用户主动打开后生效。
     // 关闭时上下文接近上限仍由最后一条回复后的提示条提醒手动压缩。
@@ -129,6 +139,16 @@ export function defaultSettings(): Settings {
     subagent: defaultSubagentConfig(),
     // 工作区工具面契约(PC-only):默认全关,关闭时 read/edit 输出与历史逐字一致。
     workspaceTools: defaultWorkspaceToolsConfig(),
+    // 上下文预算与工具输出老化(PC-only):默认全关,关闭时请求逐字节与引入前一致。
+    contextBudget: defaultContextBudgetConfig(),
+    // 模型驱动的上下文工具面(PC-only,仅工作区):默认关,关闭时一个工具都不注入。
+    contextTools: defaultContextToolsConfig(),
+    // 本地调试端口(PC-only):默认关,开启后只绑回环。
+    debugServer: defaultDebugServerConfig(),
+    // 工具结果头尾裁剪(PC-only):默认开。阈值内的结果逐字节不变,超阈值只留头尾,
+    // 原文仍在时间线里,可用 read_original / read 的 offset 逐字取回。
+    resultClip: defaultResultClipConfig(),
+    ptc: defaultPtcConfig(),
     promptOptimizeModelId: "",
     // 全局嵌入 / 重排场景档:默认未配置(空串),由用户在「设置 › 模型 › 场景模型」里
     // 从已添加的 EMBEDDING / RERANK 模型中选。两者都是「报错档」语义:没选 = 相关功能不可用。
@@ -188,6 +208,7 @@ export function defaultSettings(): Settings {
       { type: "grok", id: id(), name: "Grok", apiKey: "", customUrl: "https://api.x.ai/v1/responses", model: "grok-4-fast" },
       { type: "tinyfish", id: id(), name: "Tinyfish", apiKey: "" },
       { type: "serper", id: id(), name: "Serper", apiKey: "" },
+      { type: "deepseek", id: id(), name: "DeepSeek", apiKey: "" },
     ],
     searchCommonOptions: { resultSize: 10 },
     searchServiceSelected: 0,

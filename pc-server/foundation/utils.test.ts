@@ -74,10 +74,19 @@ describe("applyPlaceholders / renderTemplate", () => {
 });
 
 describe("estimateTokens", () => {
-  test("CJK 按 0.9/字，其他按 1/4，向上取整且至少为 1", () => {
+  test("CJK 按 1/字，其他按 1/4，向上取整且至少为 1", () => {
     expect(estimateTokens("")).toBe(1);
     expect(estimateTokens("abcd")).toBe(1);
-    expect(estimateTokens("你好")).toBe(2); // 2 * 0.9 = 1.8 → 2
+    expect(estimateTokens("你好")).toBe(2);
+    expect(estimateTokens("你好abcd")).toBe(3); // 2 + ceil(4/4)
+  });
+
+  test("假名/谚文/CJK 标点/兼容表意文字同样按 1/字(旧口径漏算这些)", () => {
+    expect(estimateTokens("こんにちは")).toBe(5); // 平假名
+    expect(estimateTokens("カタカナ")).toBe(4); // 片假名
+    expect(estimateTokens("안녕하세요")).toBe(5); // 谚文
+    expect(estimateTokens("。、《》")).toBe(4); // CJK 标点 U+3000–303F
+    expect(estimateTokens("豈更")).toBe(2); // 兼容表意文字 U+F900–FAFF
   });
 });
 

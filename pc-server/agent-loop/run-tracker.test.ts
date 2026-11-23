@@ -15,6 +15,8 @@ import {
   type AgentRunTracker,
 } from "./run-tracker";
 import { getRun, listRunEvents } from "./run-store";
+import { setState, state } from "../persistence/json-store";
+import { defaultState } from "../app-config/defaults";
 
 const db = getConversationsDb() ?? openConversationsDb();
 const CONV = `run-tracker-conv-${process.pid}`;
@@ -134,6 +136,88 @@ describe("运行状态机", () => {
     tracker.ensureSettled("late-finally");
     expect(getRun(tracker.runId)).toMatchObject({ status: "succeeded", error: null });
     expect(listRunEvents(tracker.runId).filter((event) => event.kind === "run_finished")).toHaveLength(1);
+  });
+
+  test("S-F4:每轮一条 round_summary(嵌套单计),裁剪后体积与 token 估算同源", () => {
+    // 决定性裁剪配置:>400 字符的结果按 200/60 头尾裁,原始与裁剪后字节必然不同。
+    const prior = state;
+    setState({
+      ...defaultState(),
+      settings: {
+        ...defaultState().settings,
+        resultClip: { enabled: true, thresholdChars: 400, headChars: 200, tailChars: 60 },
+      },
+    } as typeof state);
+    try {
+      const roundTracker = beginAgentRun({ conversationId: CONV, nodeId: "n1", engine: "pi" })!;
+      roundTracker.boundary(1);
+      roundTracker.observe({
+        kind: "tool_call_created",
+        toolCallId: "rc1",
+        toolName: "run_code",
+        input: "{\"code\":\"…\"}",
+        approvalState: { type: "auto" },
+      });
+      roundTracker.observe({
+        kind: "tool_call_created",
+        toolCallId: "rc1:n1",
+        toolName: "read",
+        input: "{\"path\":\"big\"}",
+        approvalState: { type: "auto" },
+        metadata: { nestedInRunCode: "rc1" },
+      });
+      roundTracker.observe({
+        kind: "tool_result",
+        toolCallId: "rc1:n1",
+        output: [{ type: "text", text: "y".repeat(900) }],
+        final: true,
+      });
+      roundTracker.observe({
+        kind: "tool_result",
+        toolCallId: "rc1",
+        output: [{ type: "text", text: "done" }],
+        final: true,
+      });
+      const snapshot = roundTracker.roundSummary()!;
+      expect(snapshot).toMatchObject({ round: 1, calls: 1, nestedCalls: 1, okCalls: 2 });
+      expect(snapshot.resultBytesRaw).toBe(904);
+      expect(snapshot.resultBytesClipped).toBeLessThan(snapshot.resultBytesRaw);
+      expect(snapshot.rawTokensEst).toBeGreaterThan(200);
+      expect(snapshot.savedTokensEst).toBeGreaterThan(0);
+      // 轮边界先结算上一轮,再开新轮;流水恰好一条,round 归属 1。
+      roundTracker.boundary(2);
+      const summaries = listRunEvents(roundTracker.runId).filter((event) => event.kind === "round_summary");
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]!.payload).toMatchObject({ round: 1, calls: 1, nestedCalls: 1 });
+      expect(summaries[0]!.summary.length).toBeLessThanOrEqual(240);
+      expect(summaries[0]!.summary).toContain("嵌套 1");
+      // 第 2 轮无调用 → 终局不产空汇总。
+      roundTracker.finishTerminal("succeeded");
+      expect(listRunEvents(roundTracker.runId).filter((event) => event.kind === "round_summary")).toHaveLength(1);
+    } finally {
+      setState(prior);
+    }
+  });
+
+  test("S-F4:同一调用重复结果只记一条 round_summary;失败结果计 error 不进 okCalls", () => {
+    const roundTracker = beginAgentRun({ conversationId: CONV, nodeId: "n1", engine: "chat" })!;
+    roundTracker.boundary(1);
+    roundTracker.observe({
+      kind: "tool_call_created",
+      toolCallId: "tc-fail",
+      toolName: "bash",
+      input: "{}",
+      approvalState: { type: "auto" },
+    });
+    roundTracker.observe({ kind: "tool_result", toolCallId: "tc-fail", output: [{ type: "text", text: "ok" }], final: true });
+    // 非终局帧不参与计账(与流水同纪律)。
+    roundTracker.observe({ kind: "tool_result", toolCallId: "tc-fail", output: [{ type: "text", text: "ok" }], final: false });
+    roundTracker.observe({ kind: "tool_result", toolCallId: "tc-fail", output: [{ error: "boom" }], final: true });
+    const snapshot = roundTracker.roundSummary()!;
+    expect(snapshot.calls).toBe(1);
+    expect(snapshot.okCalls).toBe(1);
+    roundTracker.finishTerminal("failed");
+    expect(listRunEvents(roundTracker.runId).filter((event) => event.kind === "round_summary")).toHaveLength(1);
   });
 
   test("生命周期链接:beginAgentRun 写入 resumed_from_run_id / schedule_id", () => {

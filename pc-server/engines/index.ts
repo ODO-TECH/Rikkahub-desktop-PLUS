@@ -1,19 +1,4 @@
-// engines/index.ts — 引擎抽象契约 + 注册表(T1 路由枚举化)
-//
-// 定位:把「引擎」从布尔(piRuntime 有/无)提升为一等的、可枚举、可注册的概念。
-// 这是多引擎拓展的唯一接入面——第三引擎(dsh)、第四/五候选(codex/claude-code)
-// 落地时各新增一个 adapter 并注册进 ENGINE_REGISTRY,不改动共享面、不改动已有引擎。
-//
-// 最小抽象纪律(防「把 pi 形状烙进公共契约」):EngineRunContext 只含引擎无关输入包
-// (会话 + 消息 + 助手/Provider/模型快照 + 工具执行闭包);引擎专属决策(pi 的工作区
-// runtime、子进程引擎的 spawn 句柄)由各 adapter 在 matches()/run() 内部自行解析,
-// 不进公共契约。进程内引擎(chat/pi)与子进程引擎(dsh/codex,见 T4 骨架)共享同一
-// 输出契约 GenerationEvent,前端永远无感知。
-//
-// 防循环导入:本模块不 import orchestrator;两个引擎的生成函数(callProviderStreaming /
-// runPiWorkspaceGeneration)由编排器在组装注册表时经参数注入。matches() 只做路由判定,
-// 不产副作用。
-
+// Shared generation contracts. Desktop conversations use the built-in kernel.
 import type { Assistant, Conversation, Model, Provider } from "../foundation/types";
 import type { ToolBoundaryObserver } from "../foundation/tool-boundary";
 import type {
@@ -23,9 +8,6 @@ import type {
   LoopToolObservation,
   ToolExecutor,
 } from "../inference-engine/events";
-import type { WorkspaceRuntime } from "../workspace/runtime";
-import { createChatAdapter } from "./chat-adapter";
-import { createPiAdapter } from "./pi-adapter";
 
 /** 引擎种类(开放枚举)。新增引擎 = 追加一个字面量 + 一个 adapter + 注册一行。 */
 export type EngineKind = "chat" | "pi" | "dsh" | "codex" | "claude-code" | (string & {});
@@ -53,6 +35,8 @@ export type EngineSteeringSupport = "boundary" | "none";
 /** 引擎无关的生成输入包(编排器入口一次性装配,贯穿本次生成)。 */
 export interface EngineRunContext {
   conversation: Conversation;
+  /** Immutable mode for this run; conversation.executionMode belongs to the next turn. */
+  executionMode?: "agent" | "chat";
   /** 流式落点(活视图,协调器持有可换绑实现)。引擎每次现读 target.node/target.message,
    *  不得解构缓存——steer 边界分裂会把落点换到新开的 continuation 节点。 */
   target: GenerationTarget;
@@ -121,36 +105,6 @@ export interface EngineAdapter {
    *  广播与终局清条由调用方统一负责)。未声明 = 该引擎无原生压缩,调用方回落
    *  UI 历史压缩。 */
   compact?(ctx: EngineCompactContext, sink: GenerationEventSink, signal?: AbortSignal): Promise<EngineCompactionResult>;
-}
-
-/** 生成函数注入形状:编排器把真实实现注入 adapter 工厂,engines/ 与 orchestrator 解耦。 */
-export type ChatRunFn = (
-  ctx: EngineRunContext,
-  sink: GenerationEventSink,
-  signal?: AbortSignal,
-) => Promise<string>;
-/** pi 生成实现签名:除引擎无关输入包外,还需 pi adapter 在 run() 内注入的工作区
- *  runtime(matches() 判定产物,经 WeakMap 透传)。 */
-export type PiRunFn = (
-  ctx: EngineRunContext & { piRuntime: WorkspaceRuntime | null },
-  sink: GenerationEventSink,
-  signal?: AbortSignal,
-) => Promise<string>;
-/** pi 压缩实现签名:与 PiRunFn 同构(引擎无关输入包 + adapter 透传的 runtime)。 */
-export type PiCompactFn = (
-  ctx: EngineCompactContext & { piRuntime: WorkspaceRuntime | null },
-  sink: GenerationEventSink,
-  signal?: AbortSignal,
-) => Promise<EngineCompactionResult>;
-
-/** 组装引擎注册表(编排器在模块加载时调用一次)。顺序即优先级:pi 在前(能力命中
- *  才接管),chat 恒兜底。新增引擎往数组前部插(chat 必须保持最后兜底)。 */
-export function createEngineRegistry(deps: {
-  chatRun: ChatRunFn;
-  piRun: PiRunFn;
-  piCompact: PiCompactFn;
-}): EngineAdapter[] {
-  return [createPiAdapter({ run: deps.piRun, compact: deps.piCompact }), createChatAdapter(deps.chatRun)];
 }
 
 /** 路由:遍历注册表取首个 matches() 命中的 adapter;数组恒含 chat 兜底,不会空。 */

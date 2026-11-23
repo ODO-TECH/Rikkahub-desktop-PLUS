@@ -148,6 +148,20 @@ const TTS_LANGUAGES_XAI: SpeechOption[] = [
 const sampleRates = (rates: readonly number[]): SpeechOption[] =>
   rates.map((rate) => ({ value: String(rate), label: `${rate} Hz` }));
 
+// 油库里(AquesTalk10)本地合成:声种名与情绪清单与后端 media/yukkuri/voices.ts 逐字对齐;
+// 角色是上游逐轮试听定下来的对照表(琪露诺=F3、魔理沙=F2、灵梦=F1),名字不翻译。
+const TTS_VOICES_YUKKURI: SpeechOption[] = [
+  ...literal(["f1", "f2", "f3", "m1", "m2", "r1", "r2"] as const),
+  ...([
+    ["reimu", "博丽灵梦"],
+    ["marisa", "雾雨魔理沙"],
+    ["cirno", "琪露诺"],
+  ] as const).map(([value, name]) => ({ value, label: `${name} (${value})` })),
+];
+const TTS_EMOTIONS_YUKKURI = [
+  "neutral", "happy", "angry", "sad", "surprised", "shy", "sleepy",
+] as const;
+
 const TTS_CONNECTION: SpeechField[] = [
   { key: "baseUrl", kind: "text", labelKey: "settings:speech.base_url", section: "basic" },
   { key: "apiKey", kind: "password", labelKey: "settings:speech.api_key", section: "basic" },
@@ -207,6 +221,64 @@ export const TTS_CATALOG: Record<string, TtsSpec> = {
         section: "advanced",
         min: 0.2,
         max: 3,
+        step: 0.05,
+        fallback: 1,
+      },
+    ],
+  },
+  // 油库里(AquesTalk):桌面端进程内本地合成,不联网、不要 API Key,靠用户自备的 SDK。
+  // 音色表与后端 media/yukkuri/voices.ts 单源对齐;角色名不翻译(品牌/角色名沿用中文原名,
+  // 与 fish-audio 那批中文音色同一口径)。
+  yukkuri: {
+    labelKey: "settings:speech.type_yukkuri",
+    template: () => ({
+      type: "yukkuri",
+      name: "Yukkuri TTS",
+      apiKey: "",
+      baseUrl: "",
+      voice: "f1",
+      emotion: "neutral",
+      speed: 1,
+      pitch: 1,
+      sdkPath: "",
+    }),
+    fields: [
+      {
+        key: "sdkPath",
+        kind: "text",
+        labelKey: "settings:speech.yukkuri_sdk_path",
+        hintKey: "settings:speech.yukkuri_sdk_path_desc",
+        section: "basic",
+        // 不给占位路径:留空才是常态(随包 SDK),示例路径反而会诱导用户去填一个不存在的目录。
+      },
+      {
+        key: "voice",
+        kind: "select",
+        labelKey: "settings:speech.field.voice",
+        section: "basic",
+        options: () => TTS_VOICES_YUKKURI,
+        fallback: "f1",
+        placeholderKey: "settings:speech.select_voice",
+      },
+      {
+        key: "emotion",
+        kind: "select",
+        labelKey: "settings:speech.field.emotion",
+        hintKey: "settings:speech.yukkuri_emotion_desc",
+        section: "advanced",
+        options: () => literal(TTS_EMOTIONS_YUKKURI),
+        fallback: "neutral",
+        placeholderKey: "settings:speech.select_emotion",
+      },
+      ttsSpeed("settings:speech.yukkuri_speed_desc"),
+      {
+        key: "pitch",
+        kind: "slider",
+        labelKey: "settings:speech.field.pitch",
+        hintKey: "settings:speech.yukkuri_pitch_desc",
+        section: "advanced",
+        min: 0.5,
+        max: 1.5,
         step: 0.05,
         fallback: 1,
       },
@@ -592,6 +664,30 @@ export const TTS_CATALOG: Record<string, TtsSpec> = {
       },
     ],
   },
+  // DeepSeek 官方工具 API 合成:只有两个固定音色,无模型/语速/语种参数(官方不提供),
+  // 故 fields 里没有 ttsModel——音色做成下拉(拼错官方直接 400)。
+  deepseek: {
+    label: "DeepSeek",
+    template: () => ({
+      type: "deepseek",
+      name: "DeepSeek TTS",
+      apiKey: "",
+      baseUrl: "https://api.deepseek.com",
+      voiceId: "stella",
+    }),
+    fields: [
+      ...TTS_CONNECTION,
+      {
+        key: "voiceId",
+        kind: "select",
+        labelKey: "settings:speech.field.voice",
+        section: "basic",
+        options: () => [{ value: "stella", label: "女声 (stella)" }, { value: "tide", label: "男声 (tide)" }],
+        fallback: "stella",
+        placeholderKey: "settings:speech.select_voice",
+      },
+    ],
+  },
 };
 
 /** APP 独有、本端尚未实现的类型(原样保留以便回传):只给通用连接字段。 */
@@ -775,6 +871,47 @@ export const ASR_CATALOG: Record<string, AsrSpec> = {
       { key: "apiKey", kind: "password", labelKey: "settings:speech.api_key", section: "basic" },
       { key: "model", kind: "text", labelKey: "settings:speech.model", section: "basic", placeholder: "mimo-v2.5-asr" },
       asrLanguage("auto"),
+      {
+        key: "segmentDurationSec",
+        kind: "slider",
+        labelKey: "settings:speech.segment_duration",
+        hintKey: "settings:speech.segment_duration_desc",
+        section: "advanced",
+        min: 0,
+        max: 60,
+        step: 5,
+        fallback: 30,
+      },
+    ],
+  },
+  // DeepSeek 也是 HTTP 分段识别(官方 POST /v1/tools/asr,multipart 只带 file),同样没有
+  // WebSocket 与服务端 VAD:只用于输入框听写,不参与语音模式/电话。模板字段与后端
+  // defaultAsrProvider("deepseek")、安卓 ASRProviderSetting.DeepSeek 逐字对齐——官方没有
+  // 模型名与语种参数(自动识别),所以这里既没有 model 也没有 language 字段。
+  deepseek: {
+    label: "DeepSeek",
+    template: () => ({
+      type: "deepseek",
+      name: "DeepSeek ASR",
+      apiKey: "",
+      websocketUrl: "",
+      baseUrl: "https://api.deepseek.com",
+      sampleRate: 16000,
+      segmentDurationSec: 30,
+    }),
+    fields: [
+      { key: "baseUrl", kind: "text", labelKey: "settings:speech.base_url", section: "basic" },
+      { key: "apiKey", kind: "password", labelKey: "settings:speech.api_key", section: "basic" },
+      {
+        key: "sampleRate",
+        kind: "select",
+        numeric: true,
+        labelKey: "settings:speech.sample_rate",
+        hintKey: "settings:speech.deepseek_asr_limits",
+        section: "advanced",
+        options: () => sampleRates([8000, 16000, 22050, 24000, 32000, 44100, 48000]),
+        fallback: "16000",
+      },
       {
         key: "segmentDurationSec",
         kind: "slider",

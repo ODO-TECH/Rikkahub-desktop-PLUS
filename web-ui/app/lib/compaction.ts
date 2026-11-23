@@ -33,12 +33,21 @@ export function compactionDividerBelow(
 // ── 压缩记录展示(分割线点开看摘要/切点/规模) ─────────────────────────
 
 /** 会话级压缩记录(conversation.engineCompactions 元素)的前端投影。
- *  与后端 inference-engine/engine-compaction.ts 同形;PC 自有字段,安卓导出不含。 */
+ *  与后端 inference-engine/engine-compaction.ts 同形;PC 自有字段,安卓导出不含。
+ *  S5 起一条记录是一个**块**(只覆盖 startMessageId→cutMessageId 这段原文),
+ *  多个块并列生效;无 startMessageId 的老记录仍是 v1"切点之前全部"语义。 */
 export interface CompactionRecord {
   cutMessageId: string;
   summary: string;
   tokensBefore: number;
   createdAt?: string;
+  id?: string;
+  startMessageId?: string;
+  /** S6 蒸馏层级:1 = 折原文,2+ = 折下层块摘要。 */
+  tier?: number;
+  consumedRecordIds?: string[];
+  /** S6 被上层块吸收后置 false。记录仍在库里(血统可回溯),但不再画线/不再展示。 */
+  active?: boolean;
 }
 
 /** 详情卡只需要的最小消息面:线上 DTO 的 role 是大写枚举,不走前端内部 UIMessage。 */
@@ -59,14 +68,22 @@ export interface CompactionAnchorInfo {
   record: CompactionRecord;
   /** 切点消息:分割线下方第一条逐字进入模型的原文。 */
   cutMessage: CompactionPreviewMessage;
-  /** 当前这份(链式)摘要的估算 token。 */
+  /** 当前这份摘要的估算 token(v1 是链式全文,S5 起只是本块)。 */
   summaryTokens: number;
-  /** 上一版摘要的估算 token;首份摘要为 0。 */
+  /** 上一块摘要的估算 token;首块为 0。S5 起两块是并列关系而非"新旧版本",
+   *  详情卡用它展示相邻块的体量对照,不再暗示"本块取代了上一块"。 */
   previousSummaryTokens: number;
+  /** S6 蒸馏层级(老记录按 1)。 */
+  tier: number;
+  /** 本块在生效块序列里的序号(1 起)与总数,用于折叠卡上的"段 N/M"标注。 */
+  blockOrdinal: number;
+  blockTotal: number;
 }
 
 /** DB 任意 JSON → 压缩记录。宽容解析:坏条目丢弃,不因一条脏数据让整条分割线失效
- *  (与后端 parseEngineCompactions 同哲学)。 */
+ *  (与后端 parseEngineCompactions 同哲学)。
+ *  S6:active === false 的块已被上层块吸收,不再是模型可见的记忆边界 → 直接过滤,
+ *  与后端 resolveCompactionBlocks / markCompactionCuts 同口径(记录本身不删)。 */
 export function parseCompactionRecords(raw: unknown): CompactionRecord[] {
   if (!Array.isArray(raw)) return [];
   const records: CompactionRecord[] = [];
@@ -74,6 +91,7 @@ export function parseCompactionRecords(raw: unknown): CompactionRecord[] {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const value = item as Record<string, unknown>;
     if (typeof value.cutMessageId !== "string" || typeof value.summary !== "string") continue;
+    if (value.active === false) continue;
     const tokensBefore =
       typeof value.tokensBefore === "number" && Number.isFinite(value.tokensBefore)
         ? Math.max(0, value.tokensBefore)
@@ -83,21 +101,34 @@ export function parseCompactionRecords(raw: unknown): CompactionRecord[] {
       summary: value.summary,
       tokensBefore,
       ...(typeof value.createdAt === "string" ? { createdAt: value.createdAt } : {}),
+      ...(typeof value.id === "string" && value.id ? { id: value.id } : {}),
+      ...(typeof value.startMessageId === "string" && value.startMessageId
+        ? { startMessageId: value.startMessageId }
+        : {}),
+      ...(typeof value.tier === "number" && Number.isFinite(value.tier)
+        ? { tier: Math.max(1, Math.floor(value.tier)) }
+        : {}),
+      ...(Array.isArray(value.consumedRecordIds)
+        ? {
+            consumedRecordIds: value.consumedRecordIds.filter(
+              (entry): entry is string => typeof entry === "string" && entry.length > 0,
+            ),
+          }
+        : {}),
     });
   }
   return records;
 }
 
-/** 压缩记录 → "分割线锚点消息 id → 可展示详情"。
+/** 压缩记录 → 按锚点顺序排列的生效块详情(内部单源,Map 与数组两个出口共用)。
  *  切点所在的节点可能不是当前选中分支,所以按节点成员查;锚点则取前一个节点的当前
- *  选中消息——与后端 markCompactionCut 的落点一致。切点已被删除的旧记录直接跳过
- *  (线上不会画线,也没有可解释的切点)。同一锚点存在多条记录时后者覆盖前者,
- *  与"只有最新一条记录生效"的语义一致。 */
-export function buildCompactionAnchors(
+ *  选中消息——与后端 markCompactionCuts 的落点一致。切点已被删除的旧记录直接跳过
+ *  (线上不会画线,也没有可解释的切点)。同一锚点存在多条记录时后者覆盖前者。 */
+function resolveCompactionAnchors(
   raw: unknown,
   nodes: ReadonlyArray<CompactionTimelineNode>,
-): Map<string, CompactionAnchorInfo> {
-  const anchors = new Map<string, CompactionAnchorInfo>();
+): Array<{ anchorId: string; info: CompactionAnchorInfo }> {
+  const list: Array<{ anchorId: string; info: CompactionAnchorInfo }> = [];
   let previousSummaryTokens = 0;
   for (const record of parseCompactionRecords(raw)) {
     let cutNodeIndex = -1;
@@ -114,15 +145,47 @@ export function buildCompactionAnchors(
     const anchorId = nodes[cutNodeIndex - 1]!.selectedId;
     if (!cutMessage || !anchorId) continue;
     const summaryTokens = estimateCompactionTokens(record.summary);
-    anchors.set(anchorId, {
-      record,
-      cutMessage,
-      summaryTokens,
-      previousSummaryTokens,
+    // "上一版摘要"只对 v1 链式记录成立(新摘要包含旧摘要,增量才有意义)。
+    // S5 块是并列关系:本块摘要全部是新增体量,上一块与它无关 → 增量基准归零,
+    // 详情卡的"净省 = 原文 − 增量"因此对每块都等于"原文 − 本块摘要",口径正确。
+    const baselineTokens = record.startMessageId ? 0 : previousSummaryTokens;
+    list.push({
+      anchorId,
+      info: {
+        record,
+        cutMessage,
+        summaryTokens,
+        previousSummaryTokens: baselineTokens,
+        tier: record.tier ?? 1,
+        blockOrdinal: list.length + 1,
+        blockTotal: 0,
+      },
     });
     previousSummaryTokens = summaryTokens;
   }
+  for (const entry of list) entry.info.blockTotal = list.length;
+  return list;
+}
+
+/** 压缩记录 → "分割线锚点消息 id → 可展示详情"。 */
+export function buildCompactionAnchors(
+  raw: unknown,
+  nodes: ReadonlyArray<CompactionTimelineNode>,
+): Map<string, CompactionAnchorInfo> {
+  const anchors = new Map<string, CompactionAnchorInfo>();
+  for (const entry of resolveCompactionAnchors(raw, nodes)) {
+    anchors.set(entry.anchorId, entry.info);
+  }
   return anchors;
+}
+
+/** 生效块详情按锚点顺序的数组出口(S5 折叠卡要把所有块摊在一起,而不是只显示末块)。
+ *  带上 anchorId,逐块"详情"按钮才能打开对应块的弹窗。 */
+export function compactionAnchorEntries(
+  raw: unknown,
+  nodes: ReadonlyArray<CompactionTimelineNode>,
+): Array<{ anchorId: string; info: CompactionAnchorInfo }> {
+  return resolveCompactionAnchors(raw, nodes);
 }
 
 /** 最新一条仍有效的压缩记录落在时间线的哪个位置。
@@ -155,17 +218,28 @@ export function latestCompactionPlacement(
   return null;
 }
 
-/** 摘要体量估算:与后端 foundation/utils.ts estimateTokens 同一口径(CJK 0.9、
- *  其他字符 1/4),只用于详情卡里的近似展示,不参与任何压缩判定。 */
+/** 摘要体量估算:与后端 foundation/utils.ts estimateTokens 同一口径(CJK 1 token/字、
+ *  其他字符 1/4),只用于详情卡里的近似展示,不参与任何压缩判定。
+ *  ⚠️ 改这里必须同批改后端 estimateTokens,否则详情卡与后端口径打架。 */
+const CJK_TOKEN_CHARS = /[㐀-鿿豈-﫿぀-ヿ가-힯　-〿]/g;
+
 export function estimateCompactionTokens(text: string): number {
-  const cjk = (text.match(/[㐀-鿿]/g) ?? []).length;
+  const cjk = text.length - text.replace(CJK_TOKEN_CHARS, "").length;
   const other = Math.max(0, text.length - cjk);
-  return Math.max(1, Math.ceil(cjk * 0.9 + other / 4));
+  return Math.max(1, Math.ceil(cjk + other / 4));
 }
 
-/** 上下文告警的保留量:与工作区 pi 自动压缩阈值同一口径(contextWindow - reserveTokens,
- *  reserveTokens 默认 16384)。剩余窗口不足这么多 token 时提示用户主动压缩。 */
+/** 上下文告警的保留量兜底(S3 前的唯一口径)。服务端 context-limit 路由现在随窗口一起
+ *  下发 contextReserve(= 后端 reserveTokensFor,跟模型输出上限走),提示条优先用它;
+ *  只有拿不到服务端值(老数据/请求失败)时才回退到 contextWarningReserveFallback。
+ *  ⚠️ 改这里必须同批改后端 engine-compaction.ts 的 reserveTokensFor。 */
 export const CONTEXT_WARNING_RESERVE_TOKENS = 16384;
+
+/** 无服务端预留时的回退:与后端 reserveTokensFor 在"输出上限未知"分支同形状
+ *  (窗口 1/4,下限 2048),再封在旧常量 16384 内——大窗口上不因为回退而过度提前告警。 */
+export function contextWarningReserveFallback(contextWindow: number): number {
+  return Math.max(2048, Math.min(CONTEXT_WARNING_RESERVE_TOKENS, Math.floor(contextWindow * 0.25)));
+}
 
 /** 手动压缩参数归一化:对话框滑杆/输入框允许临时空串 / 小数 / 越界值,提交前统一成
  *  后端可用值。目标 token 下限与后端同口径(256);保留条数 0 合法,表示尽量压缩。 */
@@ -240,10 +314,13 @@ export function compactionAfterMessage(records: unknown, messageAt?: string | nu
 
 /** 上下文接近上限的占用百分比;未越过阈值/缺分母时返回 null(不显示提示)。
  *  分子与聊天消息里的上下文进度环同口径:promptTokens + completionTokens = 这条回复
- *  之后窗口里的总量。分母优先 live(切模型即更新),回退消息生成时的快照。 */
+ *  之后窗口里的总量。分母优先 live(切模型即更新),回退消息生成时的快照。
+ *  liveReserve(S3)= 服务端随窗口下发的本轮预留,与后端自动压缩触发线同一个数;
+ *  缺省时按窗口比例回退,不再一律写死 16384(小窗口模型上那等于永不提示)。 */
 export function contextWarningPercent(
   usage: Pick<TokenUsage, "promptTokens" | "completionTokens" | "contextLimit">,
   liveLimit?: number | null,
+  liveReserve?: number | null,
 ): number | null {
   const limit =
     liveLimit != null && liveLimit > 0
@@ -254,8 +331,9 @@ export function contextWarningPercent(
   if (limit == null) return null;
   const used = (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
   if (!(used > 0)) return null;
-  const threshold = limit - CONTEXT_WARNING_RESERVE_TOKENS;
-  // 窗口本身小于保留量(极小模型/错误目录值):阈值失效,不提示——压缩救不了它。
+  const reserve = liveReserve != null && liveReserve > 0 ? liveReserve : contextWarningReserveFallback(limit);
+  const threshold = limit - reserve;
+  // 阈值非正(极小模型/错误目录值):不提示——压缩救不了它。
   // 严格大于(与 pi 的 shouldCompact 同口径):恰好等于阈值时仍有一整个保留区可用。
   if (threshold <= 0 || used <= threshold) return null;
   return Math.min(100, Math.round((used / limit) * 100));

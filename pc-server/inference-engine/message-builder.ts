@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { ApiMessage, Assistant, JsonValue, Message, MessagePart, Model, Provider, ToolOutputEntry } from "../foundation/types";
 import { id, isRecord } from "../foundation/utils";
+import { effectiveMaxTokens, effectiveTopP } from "./sampling";
 import {
   ARK_SEED2_EFFORT_BY_LEVEL,
   budgetTokensFor,
@@ -466,8 +467,11 @@ export function googleContentsFromApiMessages(messages: ApiMessage[]): Record<st
 export function googleGenerationConfig(modelItem: Model, assistant: Assistant) {
   const config: Record<string, JsonValue> = {};
   if (assistant.temperature != null) config.temperature = assistant.temperature;
-  if (assistant.topP != null) config.topP = assistant.topP;
-  if (assistant.maxTokens != null) config.maxOutputTokens = assistant.maxTokens;
+  // 0 = 未设置哨兵:topP=0 / maxOutputTokens=0 会让严格上游返回空回复。
+  const topP = effectiveTopP(assistant.topP);
+  const outputCap = effectiveMaxTokens(assistant.maxTokens);
+  if (topP != null) config.topP = topP;
+  if (outputCap != null) config.maxOutputTokens = outputCap;
   if (supportsOutputModality(modelItem, "IMAGE")) {
     config.responseModalities = ["TEXT", "IMAGE"];
   }

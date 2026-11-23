@@ -39,6 +39,8 @@ export type AgentRunEventKind =
   | "run_started"
   | "run_resumed"
   | "round"
+  /** S-F4:轮边界体积汇总(调用数/原始与裁剪后字节/估算省下的 token)。 */
+  | "round_summary"
   | "tool_call"
   | "tool_result"
   /** O4:执行前记录的有效边界(附 toolCallId + stage=execution)。 */
@@ -52,6 +54,21 @@ export type AgentRunEventKind =
   | "error"
   | "run_suspended"
   | "run_finished";
+
+/** S-F4:一轮工具执行的体积快照。字节数与 token 估算都由观测事件现算,
+ *  不读库、不读富化结果——与 contextNudgeBlock 共用 estimateTokens 口径。 */
+export interface AgentRoundSummary {
+  round: number;
+  /** 顶层调用数(run_code 的嵌套调用单独计,防把一次折叠算成多次)。 */
+  calls: number;
+  nestedCalls: number;
+  okCalls: number;
+  resultBytesRaw: number;
+  resultBytesClipped: number;
+  /** 原始体积的 token 估算(estimateTokens 汇总,判定表预算刹车的输入)。 */
+  rawTokensEst: number;
+  savedTokensEst: number;
+}
 
 export interface AgentRunSummary {
   id: string;

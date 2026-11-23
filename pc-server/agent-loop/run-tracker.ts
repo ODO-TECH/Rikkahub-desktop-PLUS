@@ -9,7 +9,7 @@
 // 推送纪律:每个变化经 initAgentRunBroadcast 注入的出口广播到会话 SSE(事件名 agent-run)。
 // 与 sse 模块解耦用注入(同 memory-vector 的模式),避免 agent-loop → api 反向依赖。
 
-import { id } from "../foundation/utils";
+import { estimateTokens, id, isRecord } from "../foundation/utils";
 import {
   boundaryIdFor,
   type ToolBoundaryObservation,
@@ -29,7 +29,16 @@ import {
   type RunApprovalUsage,
   type RunPatch,
 } from "./run-store";
-import type { AgentRunEventDto, AgentRunPhase, AgentRunPushDto, AgentRunStatus, AgentRunSummary } from "./types";
+import { clipToolResultText } from "../inference-engine/result-clip";
+import { state } from "../persistence/json-store";
+import type {
+  AgentRoundSummary,
+  AgentRunEventDto,
+  AgentRunPhase,
+  AgentRunPushDto,
+  AgentRunStatus,
+  AgentRunSummary,
+} from "./types";
 
 export type AgentRunTerminal = "succeeded" | "failed" | "exhausted" | "stalled" | "stopped";
 
@@ -59,6 +68,9 @@ export interface AgentRunTracker {
   noteStall(reason: string): void;
   /** 自主循环(S2):回填目标快照(计划 v2 的 goal;只存摘要,不存正文)。 */
   setGoal(goal: string): void;
+  /** S-F4:当前轮的体积快照(工具批执行完、turn_end 判定前读取)。轮内无调用 → null。
+   *  纯读,不落库——落库发生在轮边界推进/终局(见 flushRound)。 */
+  roundSummary(): AgentRoundSummary | null;
   /** pause-resume 引擎的审批暂停:状态置 suspended,不写终局(批准后续跑接续本 run)。 */
   suspend(): void;
   /** 收敛终局。幂等,重复调用只生效一次。 */
@@ -129,6 +141,8 @@ class Tracker implements AgentRunTracker {
   private readonly decidedApprovals: Set<string>;
   private lastRetryAttempt = 0;
   private finished = false;
+  /** S-F4:本轮体积累计。round 记录归属轮次(与 summary.rounds 对齐)。 */
+  private round = { round: 0, calls: 0, nestedCalls: 0, okCalls: 0, resultBytesRaw: 0, resultBytesClipped: 0, rawTokensEst: 0, savedTokensEst: 0 };
 
   constructor(summary: AgentRunSummary, seed?: TrackerSeed) {
     this.summary = summary;
@@ -281,8 +295,31 @@ class Tracker implements AgentRunTracker {
     // 同轮重复边界(流式降级重试 / steering 再采样)不重复计数、不刷流水;
     // 但审批/重试相位结束后回到 acting 仍要落一次。
     if (!advanced && !restoreActing) return;
+    // S-F4:轮边界先结算上一轮的体积,再进入新轮——summry 归属的 round 是"刚结束的那轮"。
+    if (advanced) this.flushRound();
     this.persist({ rounds: nextRounds, ...(restoreActing ? { phase: "acting" as AgentRunPhase } : {}) });
-    if (advanced) this.record("round", `第 ${nextRounds} 轮`, { round: nextRounds });
+    if (advanced) {
+      this.round.round = nextRounds;
+      this.record("round", `第 ${nextRounds} 轮`, { round: nextRounds });
+    }
+  }
+
+  /** S-F4:当前轮体积快照(判定表在 turn_end 消费)。纯读,不落库。 */
+  roundSummary(): AgentRoundSummary | null {
+    if (this.round.calls === 0 && this.round.nestedCalls === 0) return null;
+    return { ...this.round, round: this.round.round || this.summary.rounds };
+  }
+
+  /** S-F4:把本轮累计落成一条 round_summary 流水并清零(轮边界/终局调用)。 */
+  private flushRound(): void {
+    const stats = this.roundSummary();
+    if (!stats) return;
+    this.round = { ...this.round, calls: 0, nestedCalls: 0, okCalls: 0, resultBytesRaw: 0, resultBytesClipped: 0, rawTokensEst: 0, savedTokensEst: 0 };
+    const kb = (bytes: number): string => (bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`);
+    const saved = stats.savedTokensEst >= 1 ? ` · 约省 ${Math.round(stats.savedTokensEst)} token` : "";
+    const nested = stats.nestedCalls > 0 ? `(嵌套 ${stats.nestedCalls})` : "";
+    const text = `第 ${stats.round} 轮 · ${stats.calls + stats.nestedCalls} 次调用${nested} · ${kb(stats.resultBytesRaw)} → ${kb(stats.resultBytesClipped)}${saved}`;
+    this.record("round_summary", text.slice(0, 240), { ...stats });
   }
 
   observe(event: GenerationEvent): void {
@@ -290,7 +327,14 @@ class Tracker implements AgentRunTracker {
     switch (event.kind) {
       case "tool_call_created": {
         this.toolNames.set(event.toolCallId, event.toolName);
-        this.record("tool_call", `调用工具 ${event.toolName}`, { toolCallId: event.toolCallId, toolName: event.toolName });
+        const nested = isRecord(event.metadata) && typeof event.metadata.nestedInRunCode === "string";
+        if (nested) this.round.nestedCalls += 1;
+        else this.round.calls += 1;
+        this.record("tool_call", `调用工具 ${event.toolName}`, {
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          ...(nested ? { nested: true } : {}),
+        });
         // OpenAI 路径的卡在这里就是终局审批态(参数齐备):pending 即进入等待。
         // Claude 路径稍后还会补一发 tool_approval_updated pending,由 Set 去重。
         if (event.approvalState.type === "pending") {
@@ -328,6 +372,37 @@ class Tracker implements AgentRunTracker {
         this.pendingApprovals.delete(event.toolCallId);
         const name = this.toolNames.get(event.toolCallId) ?? event.toolCallId;
         this.record("tool_result", `完成工具 ${name}`, { toolCallId: event.toolCallId, toolName: name });
+        // S-F4:体积口径与富化层裁剪同源——逐条文本过 clipToolResultText,差的 token
+        // 用 estimateTokens 现算(与 contextNudgeBlock 同一个函数,两处数字不会打架)。
+        let text = "";
+        let failed = false;
+        for (const entry of event.output) {
+          if (!isRecord(entry)) continue;
+          if (entry.type === "text") text += String(entry.text ?? "");
+          else {
+            const errorText = (entry as { error?: unknown }).error;
+            if (typeof errorText === "string") {
+              failed = true;
+              text += errorText;
+            }
+          }
+        }
+        if (!failed) this.round.okCalls += 1;
+        const rawBytes = Buffer.byteLength(text, "utf8");
+        // 观察者永不因环境异常打断生成:测试/极早期装配下 state 可能尚未就绪。
+        const config = state?.settings?.resultClip;
+        const clipped =
+          config?.enabled === true
+            ? clipToolResultText(text, { thresholdChars: config.thresholdChars, headChars: config.headChars, tailChars: config.tailChars })
+            : null;
+        const clippedText = clipped ?? text;
+        const rawTokens = estimateTokens(text);
+        this.round.resultBytesRaw += rawBytes;
+        this.round.resultBytesClipped += Buffer.byteLength(clippedText, "utf8");
+        this.round.rawTokensEst += rawTokens;
+        if (clipped) {
+          this.round.savedTokensEst += Math.max(0, rawTokens - estimateTokens(clippedText));
+        }
         return;
       }
       case "engine_status": {
@@ -406,6 +481,7 @@ class Tracker implements AgentRunTracker {
 
   finishTerminal(status: AgentRunTerminal, detail?: { stopReason?: string; error?: string }): void {
     if (this.finished) return;
+    this.flushRound();
     this.finished = true;
     this.persist({
       status: status as AgentRunStatus,

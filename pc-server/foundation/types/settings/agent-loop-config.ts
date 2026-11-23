@@ -28,18 +28,22 @@ export interface AgentLoopSettings {
   sameErrorLimit: number;
   /** 完成必须带工具证据:模型标 completed 但无证据的步骤不计入完成判定。 */
   requireVerifiedCompletion: boolean;
+  /** S-F5:单轮工具输出体积预算(token,0 = 关)。超预算先注入一次收口提示,
+   *  连续两轮超限 → awaiting_user(交给人,不再烧轮次)。 */
+  roundBudgetTokens: number;
   /** 生命周期 L3:耐久调度开关。关闭只停止投递,不删已有调度记录(可审计)。 */
   schedulingEnabled: boolean;
 }
 
 export function defaultAgentLoopConfig(): AgentLoopSettings {
   return {
-    enabled: false,
+    enabled: true,
     transportRetry: true,
     maxReplans: 2,
     stallRepeatLimit: 3,
     sameErrorLimit: 3,
     requireVerifiedCompletion: true,
+    roundBudgetTokens: 0,
     schedulingEnabled: false,
   };
 }
@@ -64,6 +68,7 @@ export function normalizeAgentLoopConfig(raw: unknown): AgentLoopSettings {
       typeof input.requireVerifiedCompletion === "boolean"
         ? input.requireVerifiedCompletion
         : defaults.requireVerifiedCompletion,
+    roundBudgetTokens: boundedInt(input.roundBudgetTokens, defaults.roundBudgetTokens, 0, 2_000_000),
     schedulingEnabled:
       typeof input.schedulingEnabled === "boolean"
         ? input.schedulingEnabled
@@ -86,10 +91,11 @@ export function validateAgentLoopPatch(body: Record<string, unknown>): AgentLoop
     if (typeof value !== "boolean") return { ok: false, error: `${key} must be a boolean` };
     patch[key] = value;
   }
-  const ranges: Array<[keyof Pick<AgentLoopSettings, "maxReplans" | "stallRepeatLimit" | "sameErrorLimit">, number, number]> = [
+  const ranges: Array<[keyof Pick<AgentLoopSettings, "maxReplans" | "stallRepeatLimit" | "sameErrorLimit" | "roundBudgetTokens">, number, number]> = [
     ["maxReplans", 0, 10],
     ["stallRepeatLimit", 2, 20],
     ["sameErrorLimit", 2, 20],
+    ["roundBudgetTokens", 0, 2_000_000],
   ];
   for (const [key, min, max] of ranges) {
     const value = body[key];

@@ -28,6 +28,20 @@ import {
   type PlanStep,
 } from "./plan";
 
+test("plan verification rejects invented call IDs and offers actual evidence for repair", () => {
+  const availableEvidence=[{toolCallId:"tc-time",toolName:"get_time_info"}];
+  const pending=normalizePlan({goal:"read time",steps:[{id:"s1",content:"read time",status:"pending"}]});
+  const input={steps:[{id:"s1",content:"read time",status:"completed",evidence:["call_get_time_info"]}]};
+  const rejected=planToolOutcome(pending,input,{availableEvidence});
+  expect(JSON.parse(rejected.output[0].text)).toMatchObject({status:"plan_rejected",available_evidence:availableEvidence});
+  expect(planFromToolPart({input,output:rejected.output})?.steps[0].status).toBe("pending");
+  const missing=planToolOutcome(pending,{steps:[{id:"s1",content:"read time",status:"completed"}]},{availableEvidence});
+  expect(JSON.parse(missing.output[0].text)).toMatchObject({unverified:1,missing_evidence:["s1"],available_evidence:availableEvidence});
+  input.steps[0].evidence=["tc-time"];
+  const repaired=planToolOutcome(pending,input,{availableEvidence});
+  expect(JSON.parse(repaired.output[0].text)).toMatchObject({status:"plan_recorded",unverified:0});
+});
+
 describe("normalizePlan — 归一化与钳制", () => {
   test("非法/空输入读成空计划,调用方据此判定「没有计划」", () => {
     for (const input of [undefined, null, 42, "steps", [], {}, { steps: "x" }]) {

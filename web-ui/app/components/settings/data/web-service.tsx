@@ -28,6 +28,7 @@ import { AutosaveStatusRow } from "~/components/settings/autosave-status";
 import { confirmDialog } from "~/stores/confirm-store";
 import { saveProxyFields, statusOf, useProxyStatus } from "~/components/settings/proxy";
 import { loadSandboxStatus, type SandboxStatusDto } from "~/lib/sandbox-status";
+import { DebugPortSection } from "~/components/settings/data/debug-port";
 import type { Settings } from "~/types";
 import {
   PasswordInput,
@@ -57,6 +58,7 @@ function parsePort(raw: string): number | null | "invalid" {
 /** 数据管理 › Web 服务:端口(配置值 + 实际绑定)、访问密码、出站 UA。对外暴露时密码必备。 */
 export function WebServiceSection({
   settings,
+  onSettings,
 }: {
   settings: Settings;
   onSettings: (settings: Settings) => void;
@@ -601,6 +603,8 @@ export function WebServiceSection({
           ) : null}
         </SettingsGroup>
       ) : null}
+
+      <DebugPortSection settings={settings} onSettings={onSettings} />
 
       <SettingsGroup
         title={t("settings:proxy.ua_title")}

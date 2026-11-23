@@ -7,7 +7,7 @@
 //   4. 取消/失败 → 不残留半成品 oauth 行。
 //   5. 全程凭据不出本模块:access/refresh 不落日志、不进 SSE 载荷。
 
-import type { OAuthCredential, ProviderAuthInteraction } from "../../../pi/packages/ai/src/auth/types.ts";
+import type { OAuthCredential, ProviderAuthInteraction } from "../../../vendor/pi-auth/auth/types.ts";
 import { updateSettings } from "../../app-config";
 import type { OAuthFlowId, Provider } from "../../foundation/types";
 import { reportError } from "../../observability/app-errors";

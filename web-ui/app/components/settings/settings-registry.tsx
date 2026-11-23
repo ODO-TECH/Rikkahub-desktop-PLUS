@@ -20,7 +20,12 @@ import { QuickMessagesSection } from "~/components/settings/extensions/quick-mes
 import { SkillsSection } from "~/components/settings/extensions/skills";
 import { SshSection } from "~/components/settings/extensions/ssh";
 import { ImAccessSection } from "~/components/settings/im-access";
-import { AppSection, AppearanceSection, ProfileSection, ShortcutsSection } from "~/components/settings/general";
+import {
+  AppSection,
+  AppearanceSection,
+  ProfileSection,
+  ShortcutsSection,
+} from "~/components/settings/general";
 import { LogsSection, type RequestLog } from "~/components/settings/logs";
 import { ProxySection } from "~/components/settings/proxy";
 import { ProvidersSection } from "~/components/settings/providers";
@@ -110,7 +115,7 @@ export const SETTINGS_PAGES: Record<SettingsPageKey, React.ComponentType<Setting
   memory: MemorySection,
   "experiments/memory": MemoryExperimentSection,
   "experiments/mood": MoodExperimentSection,
-  "experiments/agent-bot": AgentBotSection,
+  agent: AgentBotSection,
   data: BackupSection,
   "stats/usage": StatsSectionHost,
   "stats/logs": LogsSectionHost,

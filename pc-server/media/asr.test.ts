@@ -1,5 +1,5 @@
 // media/asr.test.ts — ASR 归一化的跨端保真(backup C4)。
-// APP 有 5 家 ASR(openai_realtime/dashscope/volcengine/mimo/step),桌面端实现前 4 家。
+// APP 有 6 家 ASR(openai_realtime/dashscope/volcengine/mimo/step/deepseek),桌面端实现其中 5 家。
 // normalizeAsrProviders 必须把 step 等未实现类型的判别符**原样保留**,而不是收敛成
 // openai_realtime——否则 APP→PC→APP 往返会无声没收用户的阶跃 ASR 配置(这正是
 // "导入了一点反应都没有"的实锤之一)。isPcKnownAsrType 是「本端能否消费」的唯一判定入口。
@@ -64,11 +64,28 @@ describe("normalizeAsrProviders 跨端保真(backup C4)", () => {
 });
 
 describe("isPcKnownAsrType(消费点降级判定单源)", () => {
-  test("本端 4 家为 true,step/未知为 false", () => {
+  test("本端 5 家为 true,step/未知为 false", () => {
     for (const t of PC_KNOWN_ASR_TYPES) expect(isPcKnownAsrType(t)).toBe(true);
     expect(isPcKnownAsrType("mimo")).toBe(true);
+    // deepseek 与 mimo 同属 HTTP 分段家族(安卓 f361bbc1 起两家都有)。
+    expect(isPcKnownAsrType("deepseek")).toBe(true);
     expect(isPcKnownAsrType("step")).toBe(false);
     expect(isPcKnownAsrType("bogus")).toBe(false);
     expect(isPcKnownAsrType(undefined)).toBe(false);
+  });
+});
+
+describe("normalizeAsrProviders 对 deepseek 的处理", () => {
+  test("套 DeepSeek 默认模板,用户值优先;官方没有 model/language,不凭空补", () => {
+    const list = normalizeAsrProviders([{ type: "deepseek", id: "ds1", apiKey: "k", segmentDurationSec: 60 }]);
+    const item = list.find((p) => p.id === "ds1");
+    expect(item?.type).toBe("deepseek");
+    expect(item?.name).toBe("DeepSeek ASR");
+    expect(item?.baseUrl).toBe("https://api.deepseek.com");
+    expect(item?.websocketUrl).toBe("");
+    expect(item?.sampleRate).toBe(16000);
+    expect(item?.segmentDurationSec).toBe(60);
+    expect(item?.model).toBeUndefined();
+    expect(item?.language).toBeUndefined();
   });
 });

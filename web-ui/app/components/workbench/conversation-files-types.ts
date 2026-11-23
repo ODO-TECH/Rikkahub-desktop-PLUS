@@ -199,3 +199,26 @@ export function fileIdFromUrl(url: string): number | null {
   const match = url.match(/\/api\/files\/(\d+)\/content/);
   return match ? Number(match[1]) : null;
 }
+
+// 附件默认按「媒体」打开(图片/音视频/PDF 直接播放或内嵌)。文本类附件
+// (Markdown/纯文本/代码等)其实有完整内容可读:按扩展名/MIME 识别后改走文本预览,
+// 与工作区文件同一套 Markdown/源码渲染,而不是落到「该文档类型无法预览」。
+const TEXT_ATTACHMENT_EXT_RE =
+  /\.(?:md|markdown|mdx|txt|text|log|json|jsonl|ndjson|ya?ml|toml|ini|cfg|conf|properties|csv|tsv|xml|html?|css|scss|sass|less|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|kts|c|h|hpp|cpp|cs|php|sh|bash|zsh|fish|ps1|bat|cmd|sql|graphql|gql|mermaid|mmd|tex|bib|r|swift|lua|pl|vue|svelte|astro|diff|patch)$/i;
+
+const TEXT_ATTACHMENT_MIMES = new Set([
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/x-javascript",
+  "application/x-yaml",
+  "application/yaml",
+  "application/toml",
+]);
+
+export function isTextAttachment(name: string, mime: string): boolean {
+  const type = (mime || "").toLowerCase();
+  if (type.startsWith("text/")) return true;
+  if (TEXT_ATTACHMENT_MIMES.has(type)) return true;
+  return TEXT_ATTACHMENT_EXT_RE.test((name || "").toLowerCase());
+}

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { ComposerModeBar } from "~/components/conversation-mode-picker";
 
 import { useNavigate, useParams, useSearchParams } from "react-router";
 
@@ -15,7 +16,11 @@ import { VoiceModeBanner } from "~/components/input/voice-mode-banner";
 import { useVoiceModeState, voiceMode } from "~/lib/voice/voice-mode";
 import { MessageQueuePanel } from "~/components/input/message-queue-panel";
 import { GlobalDropZone } from "~/components/global-drop-zone";
-import { ChatMessage, useCurrentContextLimit } from "~/components/message/chat-message";
+import {
+  ChatMessage,
+  useCurrentContextLimit,
+  useCurrentContextReserve,
+} from "~/components/message/chat-message";
 import { CompactionDetailDialog } from "~/components/message/compaction-detail-dialog";
 import { CompactionDivider } from "~/components/message/compaction-divider";
 import { CompactionSummaryCard } from "~/components/message/compaction-summary-card";
@@ -58,6 +63,7 @@ import { cn } from "~/lib/utils";
 import {
   buildCompactionAnchors,
   compactionAfterMessage,
+  compactionAnchorEntries,
   compactionDividerBelow,
   COMPRESS_KEEP_RECENT_DEFAULT,
   COMPRESS_RATIO_DEFAULT,
@@ -88,7 +94,6 @@ import {
   useConversationSubscription,
 } from "~/stores/conversation-stream";
 import { WorkbenchHost } from "~/components/workbench/workbench-host";
-import { PlanPanelToggle } from "~/components/workbench/plan-panel-toggle";
 import { ConversationFilesLauncherProvider } from "~/components/workbench/conversation-files-launcher";
 import { ContainerPlusMenu } from "~/components/workspace/container-plus-menu";
 import { ContainerTabBar } from "~/components/workspace/container-tab-bar";
@@ -96,7 +101,6 @@ import { SidebarBrandRow } from "~/components/sidebar-brand";
 import { WindowControlsBar, windowDragRegionProps } from "~/components/window-controls";
 import { ConversationTabStrip } from "~/components/workspace/conversation-tab-strip";
 import { EngineStatusBar } from "~/components/workspace/engine-status-bar";
-import { AgentRunPanel } from "~/components/workspace/agent-run-panel";
 import { AgentRunSchedules } from "~/components/workspace/agent-run-schedules";
 import { AgentRunSelectionProvider } from "~/components/workspace/agent-run-selection";
 import { PaneContainerProvider } from "~/components/workspace/pane-container-context";
@@ -152,6 +156,8 @@ import { toast } from "sonner";
 import { v4 as uuidv4 } from "uuid";
 import i18n from "~/i18n";
 import { TtsPlayBar } from "~/components/tts-play-bar";
+// 零运行时依赖的后端类型模块:语音模式的可支持判定与输入框听写共用同一份分段家族清单。
+import { PC_SEGMENTED_HTTP_ASR_TYPES } from "@server/foundation/types";
 
 interface SelectedNodeMessage {
   node: MessageNodeDto;
@@ -308,7 +314,10 @@ function WorkbenchToggle({
 }) {
   const { t } = useTranslation();
   const { panel, openPanel, closePanel } = useWorkbench();
-  const isOpen = Boolean(panel);
+  // 「打开」态只认文件页:面板开着运行页时,本钮在标签行是隐藏的,
+  // 页面内用「文件 / 运行」切换;这里保留同语义的关闭分支以防点击竞态。
+  const isOpen =
+    panel?.type === "conversation-files" && (panel.payload.view ?? "files") === "files";
   const label = isOpen
     ? t("workbench.toggle_close", "关闭文件侧边栏")
     : t("workbench.toggle_open", "打开文件侧边栏");
@@ -332,7 +341,10 @@ function WorkbenchToggle({
         openPanel({
           type: "conversation-files",
           title: workspaceName ?? t("workbench.files.title", "文件面板"),
-          payload: conversationId ? { conversationId } : workspaceId ? { workspaceId } : {},
+          payload: {
+            ...(conversationId ? { conversationId } : workspaceId ? { workspaceId } : {}),
+            view: "files",
+          },
         });
       }}
     >
@@ -359,17 +371,33 @@ function WorkbenchSide({
   const [width, setWidth] = React.useState(readWorkbenchWidth);
   const [dragging, setDragging] = React.useState(false);
   const widthRef = React.useRef(width);
+  const sideRef = React.useRef<HTMLDivElement>(null);
+  const [availableWidth, setAvailableWidth] = React.useState<number | null>(null);
+  React.useLayoutEffect(() => {
+    const parent = sideRef.current?.parentElement;
+    if (!parent) return;
+    const observer = new ResizeObserver((entries) =>
+      setAvailableWidth(entries[0].contentRect.width),
+    );
+    observer.observe(parent);
+    return () => observer.disconnect();
+  }, []);
+  const maxPanelWidth = availableWidth
+    ? Math.max(
+        WORKBENCH_MIN_WIDTH_PX,
+        Math.floor(availableWidth * Math.min(0.45, WORKBENCH_MAX_WIDTH_RATIO)),
+      )
+    : WORKBENCH_DEFAULT_WIDTH_PX;
+  const displayWidth = Math.min(width, maxPanelWidth);
 
   const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     const handle = event.currentTarget;
     const startX = event.clientX;
-    const startWidth = widthRef.current;
-    const maxWidth = Math.max(
-      WORKBENCH_MIN_WIDTH_PX,
-      Math.round(window.innerWidth * WORKBENCH_MAX_WIDTH_RATIO),
-    );
+    const startWidth = displayWidth;
+    widthRef.current = startWidth;
+    const maxWidth = maxPanelWidth;
     setDragging(true);
     handle.setPointerCapture(event.pointerId);
     const onMove = (moveEvent: PointerEvent) => {
@@ -401,6 +429,7 @@ function WorkbenchSide({
   return (
     <>
       <div
+        ref={sideRef}
         role="separator"
         aria-orientation="vertical"
         aria-label={t("workbench.resize", "调整文件侧边栏宽度")}
@@ -416,10 +445,13 @@ function WorkbenchSide({
           "relative h-full shrink-0 overflow-hidden",
           !dragging && "transition-[width] duration-200 ease-linear",
         )}
-        style={{ width: open ? width : 0 }}
+        style={{ width: open ? displayWidth : 0 }}
       >
         {/* 卡面宽度钉在像素上:开合过渡只裁切,文字不重排(与左栏同款观感)。 */}
-        <div className="absolute top-0 right-2 bottom-2" style={{ width: Math.max(0, width - 16) }}>
+        <div
+          className="absolute top-0 right-2 bottom-2"
+          style={{ width: Math.max(0, displayWidth - 16) }}
+        >
           {panel ? (
             <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[18px] border border-black/[0.06] bg-sidebar shadow-[var(--ds-elevation-100)]">
               <WorkbenchHost
@@ -684,12 +716,24 @@ function useDraftInputController({
     // 双层标签(M2-1):新会话归属发起它的那一列的容器——工作区容器时把 workspaceId
     // 一并送给 ensureConversation,服务端据此挂载工作区工具与提示词段。并排后必须用
     // 列的容器而不是全局激活容器,否则在非聚焦列发第一句会挂到邻列的工作区上。
-    await api.post<{ status: string }>(
-      `conversations/${conversationId}/messages`,
-      container !== CHAT_CONTAINER ? { parts, workspaceId: container } : { parts },
-    );
+    const search = new URLSearchParams(window.location.search);
+    // 侧栏「纯对话」写 mode=chat(纯 Chat 会话类型);mode=agent 是工作区侧栏的
+    // Agent 新建入口(对话容器不提供 Agent 新建)。对话容器本身就是纯对话:
+    // 没有显式 mode=agent 的草稿一律按纯 Chat 建档,绝不把 workspaceId 挂到一个
+    // 没有工作区能力的会话上(否则欢迎页仍显示工作区胶囊、档位也是假的)。
+    const explicitKind = search.get("mode");
+    const chatKind =
+      explicitKind === "chat" || (explicitKind !== "agent" && container === CHAT_CONTAINER);
+    const chatTurn = chatKind || search.get("turn") === "chat";
+    const targetContainer = chatKind ? CHAT_CONTAINER : container;
+    await api.post<{ status: string }>(`conversations/${conversationId}/messages`, {
+      parts,
+      conversationKind: chatKind ? "chat" : "agent",
+      executionMode: chatTurn ? "chat" : "agent",
+      ...(targetContainer !== CHAT_CONTAINER ? { workspaceId: targetContainer } : {}),
+    });
     clearDraft(draftKey);
-    useContainerTabsStore.getState().openConversation(container, conversationId);
+    useContainerTabsStore.getState().openConversation(targetContainer, conversationId);
 
     setActiveId(conversationId);
     navigate(`/c/${conversationId}`);
@@ -978,30 +1022,32 @@ const ConversationTimeline = React.memo(
         message: node.messages[node.selectIndex] ?? node.messages[0],
       }));
     }, [detail]);
+    // 压缩判定的时间线投影(三处共用一份,避免各写一遍节点→选中消息的映射)。
+    const compactionTimelineNodes = React.useMemo(() => {
+      if (!detail) return [];
+      return detail.messages.map((node) => ({
+        messages: node.messages,
+        selectedId: (node.messages[node.selectIndex] ?? node.messages[0])?.id ?? "",
+      }));
+    }, [detail]);
     // 压缩记录 → 分割线锚点详情。切点可能落在非当前分支上,所以按节点成员查找;
     // 旧的 cut 注解若找不到对应记录(历史版本数据)就只画线、不提供可点入口。
     const compactionAnchors = React.useMemo(() => {
       if (!detail) return new Map<string, CompactionAnchorInfo>();
-      return buildCompactionAnchors(
-        detail.engineCompactions,
-        detail.messages.map((node) => ({
-          messages: node.messages,
-          selectedId: (node.messages[node.selectIndex] ?? node.messages[0])?.id ?? "",
-        })),
-      );
-    }, [detail]);
+      return buildCompactionAnchors(detail.engineCompactions, compactionTimelineNodes);
+    }, [detail, compactionTimelineNodes]);
+    // S5:折叠区可能覆盖多个并列生效块,折叠卡要把它们全部摊出来(只显示末块会让
+    // 用户以为早期摘要丢了,而模型其实全都拿着)。按锚点顺序,带 anchorId 供逐块详情。
+    const compactionBlockEntries = React.useMemo(() => {
+      if (!detail) return [];
+      return compactionAnchorEntries(detail.engineCompactions, compactionTimelineNodes);
+    }, [detail, compactionTimelineNodes]);
     // 最新一条有效压缩记录的位置:锚点及其之前的原文默认折叠,锚点那一行换成摘要卡。
     // 数组本身不裁剪(切分支/翻页/搜索都按下标工作),折叠只在渲染层把旧行压成 0 高。
     const compactionPlacement = React.useMemo(() => {
       if (!detail) return null;
-      return latestCompactionPlacement(
-        detail.engineCompactions,
-        detail.messages.map((node) => ({
-          messages: node.messages,
-          selectedId: (node.messages[node.selectIndex] ?? node.messages[0])?.id ?? "",
-        })),
-      );
-    }, [detail]);
+      return latestCompactionPlacement(detail.engineCompactions, compactionTimelineNodes);
+    }, [detail, compactionTimelineNodes]);
     // 压缩摘要卡上的「待确认记忆候选」:实验总开关 + 压缩后置候选都开才请求,
     // 否则不产生任何额外网络请求。失败静默为 0,不打扰阅读。
     const compactionCandidateCount = useCompactionCandidateCount(
@@ -1026,11 +1072,12 @@ const ConversationTimeline = React.memo(
     const compactionDetail = compactionAnchorId
       ? (compactionAnchors.get(compactionAnchorId) ?? null)
       : null;
-    // 上下文告警(聊天引擎):阈值与工作区 pi 自动压缩同口径——窗口剩余不足
-    // CONTEXT_WARNING_RESERVE_TOKENS 时,在最后一条回复下方提示用户主动压缩。
-    // 工作区会话不提示:pi 自带 threshold/overflow 自动压缩,手动入口也在输入区,
-    // 再插一行只是重复。渲染位置见 itemContent 的 isLastLoaded 分支。
+    // 上下文告警(聊天引擎):阈值与后端自动压缩触发线同口径——窗口剩余不足服务端
+    // 下发的本轮预留(S3 reserveTokensFor,跟模型输出上限走)时,在最后一条回复下方
+    // 提示用户主动压缩。工作区会话不提示:pi 自带 threshold/overflow 自动压缩,手动入口
+    // 也在输入区,再插一行只是重复。渲染位置见 itemContent 的 isLastLoaded 分支。
     const liveContextLimit = useCurrentContextLimit();
+    const liveContextReserve = useCurrentContextReserve();
     const contextWarning = React.useMemo(() => {
       if (!detail || detail.workspaceId) return null;
       const node = detail.messages.at(-1);
@@ -1038,8 +1085,8 @@ const ConversationTimeline = React.memo(
       if (!message || message.role !== "ASSISTANT" || !message.usage) return null;
       // 刚压缩完:最后一条回复的 usage 还是压缩前的窗口量,提示会与压缩动作自相矛盾。
       if (compactionAfterMessage(detail.engineCompactions, message.createdAt)) return null;
-      return contextWarningPercent(message.usage, liveContextLimit);
-    }, [detail, liveContextLimit]);
+      return contextWarningPercent(message.usage, liveContextLimit, liveContextReserve);
+    }, [detail, liveContextLimit, liveContextReserve]);
     const canQuickJump =
       Boolean(activeId) && !detailLoading && !detailError && selectedNodeMessages.length > 1;
     const assistant = React.useMemo(() => {
@@ -1392,7 +1439,9 @@ const ConversationTimeline = React.memo(
         window.setTimeout(() => {
           if (cancelled) return;
           const root = scrollerElRef.current;
-          const el = (root instanceof HTMLElement ? root : document).querySelector<HTMLElement>(selector);
+          const el = (root instanceof HTMLElement ? root : document).querySelector<HTMLElement>(
+            selector,
+          );
           if (!el) return;
           highlighted = el;
           el.scrollIntoView({ block: "center", behavior: "auto" });
@@ -1594,8 +1643,10 @@ const ConversationTimeline = React.memo(
                         collapsed
                         hiddenCount={foldedNodeCount}
                         candidateCount={compactionCandidateCount}
+                        blocks={compactionBlockEntries}
                         onToggle={() => setCompactionCollapsed((prev) => !prev)}
                         onOpen={() => setCompactionAnchorId(compactionPlacement.anchorId)}
+                        onOpenBlock={(anchorId) => setCompactionAnchorId(anchorId)}
                         onOpenCandidates={() =>
                           openSettingsDialog("?section=experiments&sub=memory")
                         }
@@ -1657,9 +1708,7 @@ const ConversationTimeline = React.memo(
                       candidateCount={compactionCandidateCount}
                       onToggle={() => setCompactionCollapsed((prev) => !prev)}
                       onOpen={() => setCompactionAnchorId(message.id)}
-                      onOpenCandidates={() =>
-                        openSettingsDialog("?section=experiments&sub=memory")
-                      }
+                      onOpenCandidates={() => openSettingsDialog("?section=experiments&sub=memory")}
                     />
                   ) : dividerBelow ? (
                     <CompactionDivider
@@ -2408,7 +2457,13 @@ const ConversationPaneView = React.memo(function ConversationPaneView({
     [settings],
   );
   const voiceCapable = Boolean(settings?.selectedASRProviderId && selectedAsrProvider);
-  const voiceSupported = voiceCapable && selectedAsrProvider?.type !== "mimo";
+  // 语音模式(电话)依赖服务端 VAD 的 turn_end,HTTP 分段家族(MiMo / DeepSeek)不发 turn_end,
+  // 只能做输入框听写——清单单源 = @server PC_SEGMENTED_HTTP_ASR_TYPES(与 chat-input 同一份)。
+  const voiceSupported =
+    voiceCapable &&
+    !(PC_SEGMENTED_HTTP_ASR_TYPES as readonly string[]).includes(
+      String(selectedAsrProvider?.type ?? ""),
+    );
   const handleToggleVoiceMode = React.useCallback(() => {
     if (voiceActive) {
       voiceMode.stop();
@@ -2568,398 +2623,409 @@ const ConversationPaneView = React.memo(function ConversationPaneView({
 
   return (
     <PaneContainerProvider container={container}>
-      <AgentRunSelectionProvider
-        conversationId={activeId}
-        onLocateMessage={handleLocateMessage}
-      >
-      <div
-        className="relative flex h-full min-h-0 flex-1 flex-col"
-        // 点击非焦点列任意处 → 聚焦并把路由切到它的激活会话。会话标签自己会导航到它指定
-        // 的会话(data-tab-nav),不能让这里先抢一次焦点切换,否则先跳本列旧会话、
-        // 再跳目标会话,中间闪一帧。
-        onMouseDownCapture={
-          focused
-            ? undefined
-            : (event) => {
-                if ((event.target as HTMLElement).closest("[data-tab-nav]")) return;
-                onFocusPane(container, paneIndex);
-              }
-        }
-      >
-        <ConversationTabStrip
-          container={container}
-          paneIndex={paneIndex}
-          focused={focused}
-          conversations={conversations}
-          onRename={onRenameConversation}
-          trailing={
-            canOverrideConversationSystemPrompt ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setSystemPromptDialogOpen(true)}
-                disabled={!hasDetail}
-                aria-label={t("conversations.custom_prompt.edit_aria")}
-                title={t("conversations.custom_prompt.edit_aria")}
-              >
-                <Pencil className="size-4" />
-              </Button>
-            ) : null
-          }
-        />
-
+      <AgentRunSelectionProvider conversationId={activeId} onLocateMessage={handleLocateMessage}>
         <div
-          className={cn(
-            "flex flex-1 flex-col min-h-0 overflow-hidden",
-            isNewChat && "justify-center",
-          )}
+          className="relative flex h-full min-h-0 flex-1 flex-col"
+          // 点击非焦点列任意处 → 聚焦并把路由切到它的激活会话。会话标签自己会导航到它指定
+          // 的会话(data-tab-nav),不能让这里先抢一次焦点切换,否则先跳本列旧会话、
+          // 再跳目标会话,中间闪一帧。
+          onMouseDownCapture={
+            focused
+              ? undefined
+              : (event) => {
+                  if ((event.target as HTMLElement).closest("[data-tab-nav]")) return;
+                  onFocusPane(container, paneIndex);
+                }
+          }
         >
-          {!isNewChat && (
-            <>
-              {canOverrideConversationSystemPrompt && hasDetail ? (
-                <ConversationSystemPromptButton
-                  value={conversationSystemPrompt}
-                  onSave={handleSaveConversationSystemPromptValue}
-                />
-              ) : null}
-              <div className="relative flex min-h-0 flex-1">
-                <ConversationTimeline
-                  activeId={activeId}
-                  isHomeRoute={paneIsHome}
-                  settings={settings}
-                  onEdit={handleStartEdit}
-                  onDelete={handleDeleteMessage}
-                  onFork={handleForkMessage}
-                  onRegenerate={handleRegenerate}
-                  onSelectBranch={handleSelectBranch}
-                  onTranslate={handleTranslateMessage}
-                  onTogglePin={handleTogglePin}
-                  onToolApproval={handleToolApproval}
-                  onCompress={handleCompressConversation}
-                />
-              </div>
-            </>
-          )}
+          <ConversationTabStrip
+            container={container}
+            paneIndex={paneIndex}
+            focused={focused}
+            conversations={conversations}
+            onRename={onRenameConversation}
+            trailing={
+              <>
+                {canOverrideConversationSystemPrompt ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => setSystemPromptDialogOpen(true)}
+                    disabled={!hasDetail}
+                    aria-label={t("conversations.custom_prompt.edit_aria")}
+                    title={t("conversations.custom_prompt.edit_aria")}
+                  >
+                    <Pencil className="size-4" />
+                  </Button>
+                ) : null}
+              </>
+            }
+          />
 
-          <div>
-            {isNewChat &&
-              (activeWorkspace ? (
-                <WorkspaceEmptyState workspace={activeWorkspace} />
-              ) : (
-                <div className="mb-6 text-center">
-                  <EmptyGreeting />
+          <div
+            className={cn(
+              "flex flex-1 flex-col min-h-0 overflow-hidden",
+              isNewChat && "justify-center",
+            )}
+          >
+            {!isNewChat && (
+              <>
+                {canOverrideConversationSystemPrompt && hasDetail ? (
+                  <ConversationSystemPromptButton
+                    value={conversationSystemPrompt}
+                    onSave={handleSaveConversationSystemPromptValue}
+                  />
+                ) : null}
+                <div className="relative flex min-h-0 flex-1">
+                  <ConversationTimeline
+                    activeId={activeId}
+                    isHomeRoute={paneIsHome}
+                    settings={settings}
+                    onEdit={handleStartEdit}
+                    onDelete={handleDeleteMessage}
+                    onFork={handleForkMessage}
+                    onRegenerate={handleRegenerate}
+                    onSelectBranch={handleSelectBranch}
+                    onTranslate={handleTranslateMessage}
+                    onTogglePin={handleTogglePin}
+                    onToolApproval={handleToolApproval}
+                    onCompress={handleCompressConversation}
+                  />
                 </div>
-              ))}
-            {/* 分块 TTS 播放条是全局单例状态,只挂在聚焦窗格,避免分栏时重复显示。 */}
-            {focused ? <TtsPlayBar /> : null}
-            {/* pi 引擎瞬态状态条(P5):按窗格各自订阅本会话状态,分栏互不串扰。 */}
-            <EngineStatusBar conversationId={activeId} />
-            {/* 本次运行(自主循环 S1):折叠流水条,实验开关关闭时不渲染。 */}
-            <AgentRunPanel conversationId={activeId} />
-            {/* 生命周期 L3:会话定时任务(调度开关关闭时整块不渲染)。 */}
-            <AgentRunSchedules conversationId={activeId} />
-            {/* 语音模式横幅(免提对话循环;关闭时不渲染)。 */}
-            {voiceActive && activeId ? (
-              <VoiceModeBanner onEnd={() => voiceMode.stop()} onRetry={handleToggleVoiceMode} />
-            ) : null}
-            <ChatInputArea
-              draftKey={draftKey}
-              slashCommands={slashCommands}
-              onSlashCommand={handleSlashCommand}
-              /* 消息发送队列贴片:渲染在输入卡上沿外侧(左右内缩、下沿被卡片盖住,自带
+              </>
+            )}
+
+            <div>
+              {isNewChat &&
+                (activeWorkspace ? (
+                  <WorkspaceEmptyState workspace={activeWorkspace} />
+                ) : (
+                  <div className="mb-6 text-center">
+                    <EmptyGreeting />
+                  </div>
+                ))}
+              {/* 分块 TTS 播放条是全局单例状态,只挂在聚焦窗格,避免分栏时重复显示。 */}
+              {focused ? <TtsPlayBar /> : null}
+              {/* pi 引擎瞬态状态条(P5):按窗格各自订阅本会话状态,分栏互不串扰。 */}
+              <EngineStatusBar conversationId={activeId} />
+              {/* 本次运行(自主循环 S1):折叠流水条,实验开关关闭时不渲染。 */}
+
+              {/* 生命周期 L3:会话定时任务(调度开关关闭时整块不渲染)。 */}
+              <AgentRunSchedules conversationId={activeId} />
+              {/* 语音模式横幅(免提对话循环;关闭时不渲染)。 */}
+              {voiceActive && activeId ? (
+                <VoiceModeBanner onEnd={() => voiceMode.stop()} onRetry={handleToggleVoiceMode} />
+              ) : null}
+              <ComposerModeBar
+                conversationId={activeId}
+                disabled={detailLoading}
+                chatContainer={container === CHAT_CONTAINER}
+              />
+              <ChatInputArea
+                draftKey={draftKey}
+                slashCommands={slashCommands}
+                onSlashCommand={handleSlashCommand}
+                /* 消息发送队列贴片:渲染在输入卡上沿外侧(左右内缩、下沿被卡片盖住,自带
                叠色色差),读作「附着在输入框上的队列」而非输入框的一部分。条件带 items
                长度——空队列不给插槽,否则输入卡上方会留一条空贴片。 */
-              queueSlot={
-                activeId &&
-                conversationMessageQueue &&
-                conversationMessageQueue.items.length > 0 ? (
-                  <MessageQueuePanel conversationId={activeId} queue={conversationMessageQueue} />
-                ) : null
-              }
-              isGenerating={conversationIsGenerating}
-              disabled={detailLoading || Boolean(detailError)}
-              isEditing={Boolean(editingSession)}
-              suggestions={displaySuggestions}
-              onSuggestionClick={handleClickSuggestion}
-              onCancelEdit={editingSession ? handleCancelEdit : undefined}
-              shouldDeleteFileOnRemove={shouldDeleteAttachmentFileOnRemove}
-              onSend={handleSend}
-              onStop={activeId ? handleStop : undefined}
-              onExportConversation={
-                hasMessages
-                  ? async (includeReasoning: boolean) => {
-                      // 导出需要完整历史:窗口化(I-2)时先拉全量;拿不到完整历史则报错
-                      // 放弃,绝不导出被窗口截断的部分内容。
-                      const detail = activeId ? await ensureFullConversationDetail(activeId) : null;
-                      if (!detail) {
-                        if (activeId) toast.error(t("conversations.errors.load_detail_failed"));
-                        return;
+                queueSlot={
+                  activeId &&
+                  conversationMessageQueue &&
+                  conversationMessageQueue.items.length > 0 ? (
+                    <MessageQueuePanel conversationId={activeId} queue={conversationMessageQueue} />
+                  ) : null
+                }
+                isGenerating={conversationIsGenerating}
+                disabled={detailLoading || Boolean(detailError)}
+                isEditing={Boolean(editingSession)}
+                suggestions={displaySuggestions}
+                onSuggestionClick={handleClickSuggestion}
+                onCancelEdit={editingSession ? handleCancelEdit : undefined}
+                shouldDeleteFileOnRemove={shouldDeleteAttachmentFileOnRemove}
+                onSend={handleSend}
+                onStop={activeId ? handleStop : undefined}
+                onExportConversation={
+                  hasMessages
+                    ? async (includeReasoning: boolean) => {
+                        // 导出需要完整历史:窗口化(I-2)时先拉全量;拿不到完整历史则报错
+                        // 放弃,绝不导出被窗口截断的部分内容。
+                        const detail = activeId
+                          ? await ensureFullConversationDetail(activeId)
+                          : null;
+                        if (!detail) {
+                          if (activeId) toast.error(t("conversations.errors.load_detail_failed"));
+                          return;
+                        }
+                        const content = await convertConversationToMarkdown(
+                          detail,
+                          includeReasoning,
+                        );
+                        const filename = safeMarkdownFilename(detail.title || "conversation");
+                        // 域10-1:桌面壳落盘 + 定位;浏览器维持下载(编排层分流)。
+                        await exportTextFile(content, filename);
                       }
-                      const content = await convertConversationToMarkdown(detail, includeReasoning);
-                      const filename = safeMarkdownFilename(detail.title || "conversation");
-                      // 域10-1:桌面壳落盘 + 定位;浏览器维持下载(编排层分流)。
-                      await exportTextFile(content, filename);
-                    }
-                  : undefined
-              }
-              onCompressConversation={hasMessages ? handleCompressConversation : undefined}
-              getOptimizeContext={getOptimizeContext}
-              conversationId={activeId}
-              onToggleVoiceMode={voiceSupported || voiceActive ? handleToggleVoiceMode : undefined}
-              voiceModeActive={voiceActive}
-            />
-          </div>
-        </div>
-
-        {dropActive ? (
-          // 落点提示层:三区等分,命中区亮起品牌色薄底 + 描边,并给一句"放手会发生什么"。
-          // 只在本列接受当前拖拽时挂载 —— 不接受时既不拦指针也不亮,用户能看出此处不可放。
-          <div
-            className={cn("absolute inset-x-0 bottom-0 z-30", overlayTop)}
-            onDragOver={(event) => {
-              const zone = resolveDropZone(event);
-              // 拖本组焦点容器落回自己的中区 = 并入它已在的组,什么都不会发生:既不亮也不
-              // 拦指针(光标保持"不可放"),别承诺一个空动作。左右缘才是"拆出去"。
-              if (selfContainerDrag && zone === "center") {
-                setDropZone(null);
-                return;
-              }
-              event.preventDefault();
-              setDropZone(zone);
-            }}
-            onDragLeave={() => setDropZone(null)}
-            onDrop={handleZoneDrop}
-          >
-            {(["left", "center", "right"] as const).map((zone) => (
-              <div
-                key={zone}
-                className={cn(
-                  "pointer-events-none absolute inset-y-1 flex items-center justify-center rounded-xl transition-all duration-150",
-                  zone === "left" && "left-1 w-1/4",
-                  zone === "center" && "left-1/4 right-1/4",
-                  zone === "right" && "right-1 w-1/4",
-                  dropZone === zone
-                    ? "bg-primary/10 ring-1 ring-primary/30"
-                    : "ring-1 ring-transparent",
-                )}
-              >
-                {dropZone === zone ? (
-                  <span className="rounded-full bg-[var(--ds-surface-100)] px-2.5 py-1 text-mini font-medium text-[var(--ds-text-secondary)] shadow-[var(--ds-elevation-100)]">
-                    {t(
-                      zone === "center"
-                        ? "workspace.tabs.drop_hint_merge"
-                        : "workspace.tabs.drop_hint_split",
-                    )}
-                  </span>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <Dialog
-          open={compressDialogOpen}
-          onOpenChange={(open) => !compressing && setCompressDialogOpen(open)}
-        >
-          <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>{t("conversations.compress.dialog_title")}</DialogTitle>
-              <DialogDescription>
-                {isWorkspaceConversation
-                  ? t("conversations.compress.workspace_description")
-                  : t("conversations.compress.dialog_description")}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-5">
-              {/* P5:工作区会话走 pi 原生压缩,压缩比例/保留最近消息是 UI 历史压缩的
-                参数(服务端忽略),隐藏以免误导;额外要求透传为压缩自定义指示。 */}
-              {!isWorkspaceConversation ? (
-                <>
-                  <div className="rounded-lg border bg-muted/30 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-                    {t("conversations.compress.manual_hint")}
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-sm font-medium">
-                        {t("conversations.compress.ratio")}
-                      </span>
-                      <span className="text-sm font-semibold tabular-nums">
-                        {compressRatio}%
-                      </span>
-                    </div>
-                    <Slider
-                      value={[compressRatio]}
-                      min={COMPRESS_RATIO_MIN}
-                      max={COMPRESS_RATIO_MAX}
-                      step={1}
-                      onValueChange={(value) =>
-                        setCompressRatio(normalizeCompressRatio(value[0] ?? COMPRESS_RATIO_DEFAULT))
-                      }
-                      onValueCommit={(value) =>
-                        void handleCompressRatioCommit(value[0] ?? compressRatio)
-                      }
-                      aria-label={t("conversations.compress.ratio")}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {compressTargetTokens != null && compressContextTokens != null
-                        ? t("conversations.compress.ratio_hint", {
-                            kept: 100 - compressRatio,
-                            target: compressTargetTokens.toLocaleString(),
-                            context: compressContextTokens.toLocaleString(),
-                          })
-                        : t("conversations.compress.ratio_hint_no_context")}
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">
-                      {t("conversations.compress.keep_recent")}
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      {COMPRESS_KEEP_OPTIONS.map((value) => (
-                        <Button
-                          key={value}
-                          type="button"
-                          variant={
-                            normalizeCompressKeepRecent(compressKeepRecent) === value
-                              ? "default"
-                              : "outline"
-                          }
-                          onClick={() => setCompressKeepRecent(String(value))}
-                        >
-                          {value}
-                        </Button>
-                      ))}
-                    </div>
-                    <Input
-                      type="number"
-                      inputMode="numeric"
-                      min={0}
-                      step={1}
-                      value={compressKeepRecent}
-                      onChange={(event) => setCompressKeepRecent(event.target.value)}
-                      onBlur={() =>
-                        setCompressKeepRecent(
-                          String(normalizeCompressKeepRecent(compressKeepRecent)),
-                        )
-                      }
-                      aria-label={t("conversations.compress.keep_recent")}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {t("conversations.compress.keep_recent_hint")}
-                    </p>
-                  </div>
-                </>
-              ) : null}
-              <label className="block space-y-2">
-                <span className="text-sm font-medium">
-                  {t("conversations.compress.additional_prompt")}
-                </span>
-                <Textarea
-                  value={compressAdditionalPrompt}
-                  onChange={(event) => setCompressAdditionalPrompt(event.target.value)}
-                  placeholder={t("conversations.compress.additional_placeholder")}
-                  className="min-h-28"
-                />
-              </label>
+                    : undefined
+                }
+                onCompressConversation={hasMessages ? handleCompressConversation : undefined}
+                getOptimizeContext={getOptimizeContext}
+                conversationId={activeId}
+                onToggleVoiceMode={
+                  voiceSupported || voiceActive ? handleToggleVoiceMode : undefined
+                }
+                voiceModeActive={voiceActive}
+              />
             </div>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  // R7-4:压缩中点取消 = 中止请求并关框(后端保证取消后不改写会话);
-                  // 未压缩时就是普通关闭。取消句柄在全局 store,切页回来仍可取消。
-                  if (activeId) useCompressStore.getState().cancel(activeId);
-                  setCompressDialogOpen(false);
-                }}
-              >
-                {t("conversations.compress.cancel")}
-              </Button>
-              <Button
-                type="button"
-                disabled={compressing}
-                onClick={() => void handleConfirmCompressConversation()}
-              >
-                {compressing ? <Loader2 className="size-4 animate-spin" /> : null}
-                {t("conversations.compress.start")}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        <Dialog
-          open={Boolean(translationDialogMessageId)}
-          onOpenChange={(open) => {
-            if (!open && !translatingMessage) setTranslationDialogMessageId(null);
-          }}
-        >
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle>{t("conversations.translate.dialog_title")}</DialogTitle>
-              <DialogDescription>
-                {t("conversations.translate.dialog_description")}
-              </DialogDescription>
-            </DialogHeader>
-            <Select value={translationLanguage} onValueChange={setTranslationLanguage}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TRANSLATION_LANGUAGES.map((language) => (
-                  <SelectItem key={language.value} value={language.value}>
-                    {t(`conversations.translate.lang.${language.value}`)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={translatingMessage}
-                onClick={() => setTranslationDialogMessageId(null)}
-              >
-                {t("conversations.translate.cancel")}
-              </Button>
-              <Button
-                type="button"
-                disabled={translatingMessage}
-                onClick={() => void handleConfirmTranslateMessage()}
-              >
-                {translatingMessage ? <Loader2 className="size-4 animate-spin" /> : null}
-                {t("conversations.translate.confirm")}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        <Dialog open={systemPromptDialogOpen} onOpenChange={setSystemPromptDialogOpen}>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>{t("conversations.custom_prompt.dialog_title")}</DialogTitle>
-              <DialogDescription>
-                {t("conversations.custom_prompt.dialog_description")}
-              </DialogDescription>
-            </DialogHeader>
-            <Textarea
-              value={systemPromptDraft}
-              onChange={(event) => setSystemPromptDraft(event.target.value)}
-              className="field-sizing-fixed h-72 max-h-[55vh] overflow-y-auto font-mono text-xs leading-relaxed"
-              placeholder={t("conversations.custom_prompt.dialog_placeholder")}
-            />
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setSystemPromptDialogOpen(false)}>
-                {t("conversations.custom_prompt.cancel")}
-              </Button>
-              <Button
-                onClick={() => void handleSaveConversationSystemPrompt()}
-                disabled={!activeId}
-              >
-                {t("conversations.custom_prompt.save")}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+          </div>
+
+          {dropActive ? (
+            // 落点提示层:三区等分,命中区亮起品牌色薄底 + 描边,并给一句"放手会发生什么"。
+            // 只在本列接受当前拖拽时挂载 —— 不接受时既不拦指针也不亮,用户能看出此处不可放。
+            <div
+              className={cn("absolute inset-x-0 bottom-0 z-30", overlayTop)}
+              onDragOver={(event) => {
+                const zone = resolveDropZone(event);
+                // 拖本组焦点容器落回自己的中区 = 并入它已在的组,什么都不会发生:既不亮也不
+                // 拦指针(光标保持"不可放"),别承诺一个空动作。左右缘才是"拆出去"。
+                if (selfContainerDrag && zone === "center") {
+                  setDropZone(null);
+                  return;
+                }
+                event.preventDefault();
+                setDropZone(zone);
+              }}
+              onDragLeave={() => setDropZone(null)}
+              onDrop={handleZoneDrop}
+            >
+              {(["left", "center", "right"] as const).map((zone) => (
+                <div
+                  key={zone}
+                  className={cn(
+                    "pointer-events-none absolute inset-y-1 flex items-center justify-center rounded-xl transition-all duration-150",
+                    zone === "left" && "left-1 w-1/4",
+                    zone === "center" && "left-1/4 right-1/4",
+                    zone === "right" && "right-1 w-1/4",
+                    dropZone === zone
+                      ? "bg-primary/10 ring-1 ring-primary/30"
+                      : "ring-1 ring-transparent",
+                  )}
+                >
+                  {dropZone === zone ? (
+                    <span className="rounded-full bg-[var(--ds-surface-100)] px-2.5 py-1 text-mini font-medium text-[var(--ds-text-secondary)] shadow-[var(--ds-elevation-100)]">
+                      {t(
+                        zone === "center"
+                          ? "workspace.tabs.drop_hint_merge"
+                          : "workspace.tabs.drop_hint_split",
+                      )}
+                    </span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <Dialog
+            open={compressDialogOpen}
+            onOpenChange={(open) => !compressing && setCompressDialogOpen(open)}
+          >
+            <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>{t("conversations.compress.dialog_title")}</DialogTitle>
+                <DialogDescription>
+                  {isWorkspaceConversation
+                    ? t("conversations.compress.workspace_description")
+                    : t("conversations.compress.dialog_description")}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-5">
+                {/* P5:工作区会话走 pi 原生压缩,压缩比例/保留最近消息是 UI 历史压缩的
+                参数(服务端忽略),隐藏以免误导;额外要求透传为压缩自定义指示。 */}
+                {!isWorkspaceConversation ? (
+                  <>
+                    <div className="rounded-lg border bg-muted/30 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+                      {t("conversations.compress.manual_hint")}
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-sm font-medium">
+                          {t("conversations.compress.ratio")}
+                        </span>
+                        <span className="text-sm font-semibold tabular-nums">{compressRatio}%</span>
+                      </div>
+                      <Slider
+                        value={[compressRatio]}
+                        min={COMPRESS_RATIO_MIN}
+                        max={COMPRESS_RATIO_MAX}
+                        step={1}
+                        onValueChange={(value) =>
+                          setCompressRatio(
+                            normalizeCompressRatio(value[0] ?? COMPRESS_RATIO_DEFAULT),
+                          )
+                        }
+                        onValueCommit={(value) =>
+                          void handleCompressRatioCommit(value[0] ?? compressRatio)
+                        }
+                        aria-label={t("conversations.compress.ratio")}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {compressTargetTokens != null && compressContextTokens != null
+                          ? t("conversations.compress.ratio_hint", {
+                              kept: 100 - compressRatio,
+                              target: compressTargetTokens.toLocaleString(),
+                              context: compressContextTokens.toLocaleString(),
+                            })
+                          : t("conversations.compress.ratio_hint_no_context")}
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-sm font-medium">
+                        {t("conversations.compress.keep_recent")}
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        {COMPRESS_KEEP_OPTIONS.map((value) => (
+                          <Button
+                            key={value}
+                            type="button"
+                            variant={
+                              normalizeCompressKeepRecent(compressKeepRecent) === value
+                                ? "default"
+                                : "outline"
+                            }
+                            onClick={() => setCompressKeepRecent(String(value))}
+                          >
+                            {value}
+                          </Button>
+                        ))}
+                      </div>
+                      <Input
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        step={1}
+                        value={compressKeepRecent}
+                        onChange={(event) => setCompressKeepRecent(event.target.value)}
+                        onBlur={() =>
+                          setCompressKeepRecent(
+                            String(normalizeCompressKeepRecent(compressKeepRecent)),
+                          )
+                        }
+                        aria-label={t("conversations.compress.keep_recent")}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t("conversations.compress.keep_recent_hint")}
+                      </p>
+                    </div>
+                  </>
+                ) : null}
+                <label className="block space-y-2">
+                  <span className="text-sm font-medium">
+                    {t("conversations.compress.additional_prompt")}
+                  </span>
+                  <Textarea
+                    value={compressAdditionalPrompt}
+                    onChange={(event) => setCompressAdditionalPrompt(event.target.value)}
+                    placeholder={t("conversations.compress.additional_placeholder")}
+                    className="min-h-28"
+                  />
+                </label>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    // R7-4:压缩中点取消 = 中止请求并关框(后端保证取消后不改写会话);
+                    // 未压缩时就是普通关闭。取消句柄在全局 store,切页回来仍可取消。
+                    if (activeId) useCompressStore.getState().cancel(activeId);
+                    setCompressDialogOpen(false);
+                  }}
+                >
+                  {t("conversations.compress.cancel")}
+                </Button>
+                <Button
+                  type="button"
+                  disabled={compressing}
+                  onClick={() => void handleConfirmCompressConversation()}
+                >
+                  {compressing ? <Loader2 className="size-4 animate-spin" /> : null}
+                  {t("conversations.compress.start")}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog
+            open={Boolean(translationDialogMessageId)}
+            onOpenChange={(open) => {
+              if (!open && !translatingMessage) setTranslationDialogMessageId(null);
+            }}
+          >
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle>{t("conversations.translate.dialog_title")}</DialogTitle>
+                <DialogDescription>
+                  {t("conversations.translate.dialog_description")}
+                </DialogDescription>
+              </DialogHeader>
+              <Select value={translationLanguage} onValueChange={setTranslationLanguage}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TRANSLATION_LANGUAGES.map((language) => (
+                    <SelectItem key={language.value} value={language.value}>
+                      {t(`conversations.translate.lang.${language.value}`)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={translatingMessage}
+                  onClick={() => setTranslationDialogMessageId(null)}
+                >
+                  {t("conversations.translate.cancel")}
+                </Button>
+                <Button
+                  type="button"
+                  disabled={translatingMessage}
+                  onClick={() => void handleConfirmTranslateMessage()}
+                >
+                  {translatingMessage ? <Loader2 className="size-4 animate-spin" /> : null}
+                  {t("conversations.translate.confirm")}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={systemPromptDialogOpen} onOpenChange={setSystemPromptDialogOpen}>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>{t("conversations.custom_prompt.dialog_title")}</DialogTitle>
+                <DialogDescription>
+                  {t("conversations.custom_prompt.dialog_description")}
+                </DialogDescription>
+              </DialogHeader>
+              <Textarea
+                value={systemPromptDraft}
+                onChange={(event) => setSystemPromptDraft(event.target.value)}
+                className="field-sizing-fixed h-72 max-h-[55vh] overflow-y-auto font-mono text-xs leading-relaxed"
+                placeholder={t("conversations.custom_prompt.dialog_placeholder")}
+              />
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setSystemPromptDialogOpen(false)}>
+                  {t("conversations.custom_prompt.cancel")}
+                </Button>
+                <Button
+                  onClick={() => void handleSaveConversationSystemPrompt()}
+                  disabled={!activeId}
+                >
+                  {t("conversations.custom_prompt.save")}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </AgentRunSelectionProvider>
     </PaneContainerProvider>
   );
@@ -3005,15 +3071,7 @@ function ConversationsPageInner() {
     [workspaces],
   );
   // 侧栏语义随容器切换(方案 §3.1):只列当前容器的会话;完整列表仍用于标题查找等。
-  const containerConversations = React.useMemo(
-    () =>
-      conversations.filter((item) =>
-        activeContainer === CHAT_CONTAINER
-          ? item.workspaceId == null
-          : item.workspaceId === activeContainer,
-      ),
-    [activeContainer, conversations],
-  );
+  const containerConversations = conversations;
 
   // 分栏(L 轮分区模型):屏幕列 = 各组焦点容器 × 各自窗格,摊平后左→右渲染。焦点列的
   // 会话以路由为权威,其余列用各自窗格的激活标签。
@@ -3173,15 +3231,27 @@ function ConversationsPageInner() {
     [activeId, navigate, refreshList, routeId, setActiveId],
   );
 
-  const handleCreateConversation = React.useCallback(() => {
-    closePanel();
-    setActiveId(null);
-    setHomeDraftId(createHomeDraftId());
+  const handleCreateConversation = React.useCallback(
+    (mode?: "agent" | "chat") => {
+      // 不传 mode 时跟随当前容器:对话标签固定纯对话,工作区标签默认 Agent。
+      const store = useContainerTabsStore.getState();
+      const effectiveMode = mode ?? (store.activeTab === CHAT_CONTAINER ? "chat" : "agent");
+      closePanel();
+      setActiveId(null);
+      setHomeDraftId(createHomeDraftId());
+      if (effectiveMode === "chat") {
+        // 纯 Chat 会话没有工作区:先把焦点移回聊天容器,欢迎页/首条消息都不再带
+        // 工作区上下文(用户反馈:纯对话模式不应显示「默认工作区」)。
+        if (store.openTabs.includes(CHAT_CONTAINER)) store.activateContainer(CHAT_CONTAINER);
+        else store.openContainer(CHAT_CONTAINER);
+      }
 
-    if (routeId) {
-      navigate("/");
-    }
-  }, [closePanel, navigate, routeId, setActiveId]);
+      // mode=agent 只在工作区容器里生效;对话容器没有显式 mode 时按纯对话建档。
+      navigate(effectiveMode === "chat" ? "/?mode=chat" : "/?mode=agent");
+      window.dispatchEvent(new Event("alpha-mode-change"));
+    },
+    [closePanel, navigate, setActiveId],
+  );
 
   // 切换到上/下个会话(按侧边栏列表顺序:置顶优先,然后按更新时间降序,与展示一致)。
   const switchConversation = (direction: -1 | 1) => {
@@ -3416,6 +3486,7 @@ function ConversationsPageInner() {
           onDelete={handleDeleteConversation}
           onDeleteMany={handleDeleteConversations}
           onCreateConversation={handleCreateConversation}
+          newConversationKind={activeContainer === CHAT_CONTAINER ? "chat" : "agent"}
           webAuthEnabled={settings?.webServerJwtEnabled === true}
         />
         <SidebarInset className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pr-2 pb-2 pl-2">
@@ -3451,10 +3522,9 @@ function ConversationsPageInner() {
                       </div>
                       {/* 面板开着时由卡片头部（与左栏折叠钮镜像的 PanelRight）关闭，
                     和左栏“展开后收起钮移入卡内”同构，不在标签行重复一个图标。
-                    计划入口同理,且只在当前会话真的写过计划时才出现(组件内部自藏)。 */}
+                    计划入口已挪到输入区档位开关旁,这里只留文件面板开关。 */}
                       {!isMobile && !panel ? (
                         <>
-                          <PlanPanelToggle conversationId={workbenchPanelContext.conversationId} />
                           <WorkbenchToggle {...workbenchPanelContext} />
                         </>
                       ) : null}
@@ -3552,9 +3622,6 @@ function ConversationsPageInner() {
                             {/* 同单组分支:面板开着时关闭入口在卡片头部,不在标签行重复。 */}
                             {groupIndex === groups.length - 1 && !panel ? (
                               <>
-                                <PlanPanelToggle
-                                  conversationId={workbenchPanelContext.conversationId}
-                                />
                                 <WorkbenchToggle {...workbenchPanelContext} />
                               </>
                             ) : null}

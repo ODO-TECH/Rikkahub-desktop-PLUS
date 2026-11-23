@@ -19,10 +19,13 @@ import type { Provider } from "../foundation/types";
 import { clearAppErrors, recentAppErrors } from "../observability/app-errors";
 import { provider } from "./index";
 import {
+  MIN_OUTPUT_HEADROOM,
   contextWindowFor,
   internalOutputCap,
   lookupModelLimit,
+  outputHeadroomFor,
   outputLimitFor,
+  planOutputCap,
   requiredOutputCap,
   resolveCatalogKeys,
   type ModelCatalog,
@@ -211,10 +214,11 @@ describe("A 行为:方言登记表优先于目录(新模型的适配入口)", ()
 describe("A 行为:上限的三种来源边界", () => {
   const zhipu = at("https://open.bigmodel.cn/api/paas/v4");
 
-  test("用户显式配置不钳(填过大是报错的事,不是静默改小设置)", () => {
+  test("用户显式配置在没有本轮 prompt 估算时不钳(填过大是报错的事,不是静默改小设置)", () => {
     // 用户填 500000 > 真实上限 131072:原样发出,由上游报 400,再由
     // provider-errors 的 classifyOutputCapError 给可行动文案。静默截短会让
     // "我明明设了 50 万"与实际行为不符,更难排查。
+    // S3 重新界定:有本轮 prompt 估算时**会**钳,但必须留痕(见下方 S3 describe)。
     expect(requiredOutputCap(CATALOG, zhipu, "glm-5.3", 500_000)).toBe(500_000);
     expect(requiredOutputCap(CATALOG, zhipu, "glm-5.3", 1024)).toBe(1024);
     // 非法值(0/负/非数)视为未配置。
@@ -280,6 +284,70 @@ describe("A 行为:上限未知要留痕(「该去查官方文档并登记」的
   });
 });
 
+describe("A 行为:S3 本轮剩余空间钳制(防 prompt + max_tokens > 窗口的硬 400)", () => {
+  const TIGHT: ModelCatalog = {
+    acme: {
+      api: "https://api.acme.test/v1",
+      models: { "ctx-200k": { limit: { context: 200_000, output: 32_768 } } },
+    },
+  };
+  const acme = at("https://api.acme.test/v1");
+
+  test("剩余空间 = 窗口 − 1.12×prompt − max(2048, 5%×prompt)", () => {
+    expect(outputHeadroomFor(200_000, 100_000)).toBe(200_000 - 112_000 - 5_000);
+    // 小 prompt 时安全垫取 2048 下限,而不是 5%(5%×1000 = 50 不足以吸收误差)。
+    expect(outputHeadroomFor(200_000, 1_000)).toBe(200_000 - 1_120 - 2_048);
+    // 报障形态:prompt 190k / 窗口 200k → 剩余为负,旧口径照发 32768 必 400。
+    expect(outputHeadroomFor(200_000, 190_000)).toBeLessThan(0);
+  });
+
+  test("空间充足时不动上限(无 prompt 估算 / 窗口未知一律逐字节保持旧行为)", () => {
+    expect(planOutputCap(TIGHT, acme, "ctx-200k", null, 100_000)).toEqual({
+      tokens: 32_768, clampedFrom: null, headroom: 83_000,
+    });
+    expect(planOutputCap(TIGHT, acme, "ctx-200k", 500_000).tokens).toBe(500_000);
+    expect(planOutputCap(TIGHT, acme, "ctx-200k", 500_000, 0).tokens).toBe(500_000);
+    expect(planOutputCap(null, acme, "ctx-200k", 500_000, 190_000).tokens).toBe(500_000);
+  });
+
+  test("空间不足 → 钳到剩余空间;用户显式配置同样钳,但 clampedFrom 留痕", () => {
+    clearAppErrors();
+    // headroom = 200000 − 179200 − 8000 = 12800 < 32768。
+    expect(planOutputCap(TIGHT, acme, "ctx-200k", null, 160_000)).toEqual({
+      tokens: 12_800, clampedFrom: 32_768, headroom: 12_800,
+    });
+    expect(planOutputCap(TIGHT, acme, "ctx-200k", 500_000, 160_000)).toEqual({
+      tokens: 12_800, clampedFrom: 500_000, headroom: 12_800,
+    });
+    const entry = recentAppErrors().find(
+      (item) => item.code === "output_cap_clamped" && item.params?.configured === 500_000,
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.severity).toBe("warn"); // 改了用户意图 → 必须比 info 更显眼
+    expect(entry?.params?.model).toBe("ctx-200k");
+    expect(entry?.message).toContain("500000");
+    expect(entry?.message).toContain("12800");
+  });
+
+  test("剩余空间低于 1024 → 可选协议省略字段;必填协议给最小合法值而不是 400", () => {
+    expect(MIN_OUTPUT_HEADROOM).toBe(1024);
+    // headroom = 200000 − 190400 − 8500 = 1100 ≥ 1024 → 仍发。
+    expect(planOutputCap(TIGHT, acme, "ctx-200k", null, 170_000).tokens).toBe(1_100);
+    // headroom = 200000 − 190512 − 8505 = 983 < 1024 → 省略(让上游用自己的默认)。
+    expect(planOutputCap(TIGHT, acme, "ctx-200k", null, 170_100).tokens).toBeNull();
+    // Anthropic 必填口不能省略:给剩余空间内的最小合法值,答案短总比整个请求 400 好。
+    expect(requiredOutputCap(TIGHT, acme, "ctx-200k", null, 170_100)).toBe(983);
+    expect(requiredOutputCap(TIGHT, acme, "ctx-200k", null, 190_000)).toBe(1);
+  });
+
+  test("空间充足时不留痕(否则钳制信号被噪音淹没)", () => {
+    clearAppErrors();
+    planOutputCap(TIGHT, acme, "ctx-200k", null, 100_000);
+    planOutputCap(TIGHT, acme, "ctx-200k", 8192, 100_000);
+    expect(recentAppErrors().filter((item) => item.code === "output_cap_clamped")).toHaveLength(0);
+  });
+});
+
 // ── B 完整性:输出上限线上字段的构造点登记 ─────────────────────────────────────
 // 登记表 = "已审阅过、确认上限经 model-limits 单源取值(或本身就是那个单源)"的文件。
 const REGISTERED_OUTPUT_CAP_FILES: ReadonlySet<string> = new Set([
@@ -291,8 +359,10 @@ const REGISTERED_OUTPUT_CAP_FILES: ReadonlySet<string> = new Set([
   "model-providers/checks.ts",
   // Google generationConfig:maxOutputTokens 仅在用户显式配置时出现。
   "inference-engine/message-builder.ts",
-  // 工作区引擎桥接:上限数值由 orchestrator 经 requiredOutputCap 注入,本文件只定字段名。
-  "pi-engine/model-bridge.ts",
+  // Protocol adapter consumes the host limits; kernel budgets may only narrow them.
+  "kernel-engine/provider.ts",
+  // Kernel budgets only narrow the output limit resolved by the host's single source.
+  "kernel-engine/limits.ts",
   // 方言事实单源:OUTPUT_LIMIT_FACTS 登记表(一手文档上限)+ DEFAULT_OUTPUT_TOKENS 兜底常量。
   // 它是 model-limits 的取值来源之一(登记优先于目录),自身即单源的一部分。
   "model-providers/request-dialect.ts",

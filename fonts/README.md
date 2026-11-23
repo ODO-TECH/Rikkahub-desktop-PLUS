@@ -1,5 +1,9 @@
 # 此目录存放随应用分发的内置字体。
 #
+# 内置字体使用保留完整字形的 WOFF2，manifest 的稳定 ID、字体族与字重保持兼容。
+# 普通构建直接复制这些文件。新增 TTF/OTF 后可用 scripts/compact-fonts.py 转换；
+# 该维护脚本只在构建机器需要 fonttools/brotli，应用运行不依赖 Python。
+#
 # 字体文件（.woff2 / .woff / .ttf / .otf / .ttc）直接放这里即可，后端 listBuiltinFonts
 # 会自动扫描，前端下拉框「应用自带」分组里显示，并注入 @font-face。
 #

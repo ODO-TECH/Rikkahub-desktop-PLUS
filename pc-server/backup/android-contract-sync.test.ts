@@ -33,6 +33,7 @@ import {
   PC_ONLY_ANNOTATION_TYPES,
   PC_ONLY_MESSAGE_PART_TYPES,
   PC_ONLY_SEARCH_SERVICE_TYPES,
+  PC_ONLY_TTS_PROVIDER_TYPES,
 } from "./export";
 
 const repoRoot = join(import.meta.dir, "..", "..");
@@ -75,10 +76,10 @@ describe("PC 判别符 → 安卓兼容性分类(强制二选一)", () => {
   });
 
   // C2:TTS/ASR provider 类型此前裸奔(无任何哨兵)。TTS 单源 = 注册表;ASR 单源 =
-  // PC_KNOWN_ASR_TYPES。两者都必须是安卓已知(PC 不产出 APP 不认识的语音类型)。
-  // ASR 方向是「PC ⊆ APP」(缺 step),故 PC-only 黑名单为空集。
-  test("TTS provider:注册表全员为安卓已知", () => {
-    classify("TTS provider", TTS_PROVIDER_TYPES, ANDROID_TTS_PROVIDER_TYPES, new Set());
+  // PC_KNOWN_ASR_TYPES。ASR 方向是「PC ⊆ APP」(缺 step),黑名单为空集;TTS 自 2026-11
+  // 起有一个 PC-only 类型(yukkuri:进程内 AquesTalk DLL),登记在 PC_ONLY_TTS_PROVIDER_TYPES。
+  test("TTS provider:注册表全员已分类(安卓已知或 PC-only)", () => {
+    classify("TTS provider", TTS_PROVIDER_TYPES, ANDROID_TTS_PROVIDER_TYPES, PC_ONLY_TTS_PROVIDER_TYPES);
   });
 
   test("ASR provider:本端类型全员为安卓已知(PC 是 APP 子集)", () => {

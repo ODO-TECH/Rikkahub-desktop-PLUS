@@ -610,7 +610,7 @@ export async function handleDataRoutes(request: Request, url: URL, path: string)
           ...(zipCustomJsWarning ? [zipCustomJsWarning] : []),
           ...buildImportWarnings(summary.report),
         ];
-        return json({ status: "imported", source: isKelivo ? "kelivo-zip" : "android-zip", summary: messages, warnings: zipWarnings, settings: stripAuthSecrets(state.settings) });
+        return json({ status: "imported", source: isKelivo ? "kelivo-zip" : "android-zip", summary: messages, warnings: zipWarnings, contextAudit: summary.report.contextAudit ?? [], settings: stripAuthSecrets(state.settings) });
       }
       // PC JSON path — safe to read fully into memory; JSON backups are KB-MB, not GB.
       const text = readFileSync(onDiskPath, "utf-8");
@@ -623,7 +623,7 @@ export async function handleDataRoutes(request: Request, url: URL, path: string)
         ...(jsonCustomJsWarning ? [jsonCustomJsWarning] : []),
         ...buildImportWarnings(jsonReport),
       ];
-      return json({ status: "imported", source: "pc-json", warnings: jsonWarnings, settings: stripAuthSecrets(state.settings) });
+      return json({ status: "imported", source: "pc-json", warnings: jsonWarnings, contextAudit: jsonReport.contextAudit ?? [], settings: stripAuthSecrets(state.settings) });
     } catch (err) {
       const elapsed = ((Date.now() - importStartedAt) / 1000).toFixed(1);
       console.error(`[import] failed after ${elapsed}s:`, err);

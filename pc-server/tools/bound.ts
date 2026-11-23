@@ -52,7 +52,7 @@ export function openAiSubagentTool() {
  *  自主循环 S2/S3:开启 agentLoop 才声明计划 v3 字段(目标三件套 + 依赖/预算/失败),
  *  关闭时 schema 与引入前逐字一致。V3 复用同一实验开关,不另立灰度。 */
 export function openAiPlanTool() {
-  const graph = state.settings.agentLoop?.enabled === true;
+  const graph = true;
   return openAiPlanToolCore(state.settings.displaySetting?.planPanel !== false, graph, graph);
 }
 

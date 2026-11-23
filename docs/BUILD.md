@@ -1,7 +1,6 @@
 # 构建与排查（BUILD / TROUBLESHOOTING）
 
-English summary: how to rebuild every artefact of this fork — vendored `pi`
-engine, Bun backend, web UI, Tauri NSIS installer, portable layout, the native
+English summary: how to rebuild every artefact of this fork — lightweight agent kernel, Bun backend, web UI, Tauri NSIS installer, portable layout, the native
 WebView2 shell, Linux binaries and the Docker image — plus the two Windows
 platform defects that dominated cold-start latency, and what to change before
 publishing your own release feed.
@@ -23,32 +22,11 @@ publishing your own release feed.
 依赖版本为什么要钉：Bun 的 `--compile` 产物行为与运行时版本强相关，CI、Dockerfile、
 本地三处不同版本会出现「本地能编、CI 红」。
 
-## 1. 还原 pi vendor（必须先做）
+## 1. Alpha 内核与源码布局
 
-后端的对话/工具编排引擎来自 [earendil-works/pi](https://github.com/earendil-works/pi)。
-本仓库**不**跟踪 `pi/` 源码，只跟踪两件东西：
-
-- `pi-patches/*.patch` —— 给上游打的受控补丁（带 `[RIKKAHUB PATCH: …]` 行内标记，方便 rebase 时 grep 定位）；
-- `pi-model-data/` —— 模型目录快照（与下面的基线 commit 严格配对）。
-
-```bash
-git clone --filter=blob:none --no-checkout https://github.com/earendil-works/pi.git pi
-cd pi
-git checkout d981de1229ef899957bbe968bc8dcda02a21f477
-git reset --hard
-git apply ../pi-patches/*.patch
-bun install                                  # pi 的 lockfile 是 v1，不要用 --frozen-lockfile
-mkdir -p packages/ai/src/providers/data
-cp ../pi-model-data/*.json ../pi-model-data/.manifest.json packages/ai/src/providers/data/
-cd ..
-```
-
-`.gitignore` 已忽略 `/pi/`。**不要**在这一步改跑 `bun run generate-models`：
-上游那个生成器是先删全部 `*.models.ts` 分片、再按 models.dev **当天**状态重建，
-第三方数据一漂移（2026-09 就发生过 `kimi-for-coding` 被摘除）就会出现「分片被删、
-无人重建」，`bun build` 全图解析直接崩。模型数据一律走 `pi-model-data/` 快照；
-升级 pi 基线时，在本地 pi 里重跑一次 `generate-models`，然后把产出的 `data/` 刷进
-`pi-model-data/`，与 patches 的刷新放在同一个时机。
+此版本使用 `agent-kernel/`，桌面适配位于 `pc-server/kernel-engine/`。
+无需克隆 pi，也无需应用 pi-patches。OAuth 协议选段已固定在 `vendor/pi-auth/`。
+独立 Alpha 的构建、测试和演示入口见 [ALPHA.md](../ALPHA.md)。
 
 ## 2. 开发模式
 
@@ -225,7 +203,7 @@ Windows 上 `bun test` 有 3 个恒定失败，不是回归、不必 bisect：2 
 
 1. **更新检查指向的仓库**：`pc-server/updates/index.ts` 的 `UPDATE_REPO` 决定
    「检查更新」去哪个 GitHub Release 取版本。本分支已指向
-   `ODO-TECH/Rikkahub-desktoPLUS`；分叉给别人用时要改成对方的仓库。误指上游 =
+   `ODO-TECH/Rikkahub-desktop-PLUS`；分叉给别人用时要改成对方的仓库。误指上游 =
    你的构建会提示升级到上游的包（会覆盖你的版本），`updates/update-channel.test.ts`
    对这一点有断言，改错会直接红。
 2. **Windows 下载源**：同文件的 `UPDATE_R2_BASE` 默认为空，即一律走 GitHub Release

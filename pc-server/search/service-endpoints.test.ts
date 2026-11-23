@@ -25,8 +25,9 @@ describe("注册表覆盖面", () => {
     expect(hasServiceEndpoint("bing_local")).toBe(false);
     expect(hasServiceEndpoint("custom_js")).toBe(false);
     expect(hasServiceEndpoint("unknown_type")).toBe(false);
-    // runSearchWeb 里每个带固定官方端点的类型都必须登记(共 17 家)
-    expect(Object.keys(SEARCH_SERVICE_ENDPOINTS).length).toBe(17);
+    // runSearchWeb 里每个带固定官方端点的类型都必须登记(共 18 家)
+    expect(Object.keys(SEARCH_SERVICE_ENDPOINTS).length).toBe(18);
+    expect(hasServiceEndpoint("deepseek")).toBe(true);
   });
 
   test("官方基址单源:各类型登记的 base 与其真实服务地址一致", () => {
@@ -46,6 +47,9 @@ describe("resolveServiceEndpoint:base 语义", () => {
     expect(resolveServiceEndpoint(svc("ollama"), "fetch")).toBe("https://ollama.com/api/web_fetch");
     expect(resolveServiceEndpoint(svc("grok"))).toBe("https://api.x.ai/v1/responses");
     expect(resolveServiceEndpoint(svc("firecrawl"))).toBe("https://api.firecrawl.dev/v2/search");
+    // DeepSeek 官方工具 API:v1 前缀在路径里,search/fetch 同基址两径。
+    expect(resolveServiceEndpoint(svc("deepseek"))).toBe("https://api.deepseek.com/v1/tools/search");
+    expect(resolveServiceEndpoint(svc("deepseek"), "fetch")).toBe("https://api.deepseek.com/v1/tools/fetch");
   });
 
   test("自定义基址:换根不换路径", () => {
@@ -60,6 +64,10 @@ describe("resolveServiceEndpoint:base 语义", () => {
     expect(resolveServiceEndpoint(svc("exa", { url: "https://api.exa.ai/contents" }), "fetch")).toBe("https://api.exa.ai/contents");
     // 中转完整端点:剥尾重拼,基址保留
     expect(resolveServiceEndpoint(svc("tavily", { url: "https://relay.example.com/search" }))).toBe("https://relay.example.com/search");
+    // deepseek 的多段路径同样幂等:粘贴完整工具端点不会被拼成 /v1/tools/search/v1/tools/search
+    expect(resolveServiceEndpoint(svc("deepseek", { url: "https://api.deepseek.com/v1/tools/search" }))).toBe("https://api.deepseek.com/v1/tools/search");
+    expect(resolveServiceEndpoint(svc("deepseek", { url: "https://relay.example.com/v1/tools/fetch" }), "fetch")).toBe("https://relay.example.com/v1/tools/fetch");
+    expect(resolveServiceEndpoint(svc("deepseek", { url: "https://relay.example.com" }))).toBe("https://relay.example.com/v1/tools/search");
   });
 
   test("存量 grok 行:预置的完整官方 customUrl 幂等还原(存量值零迁移)", () => {
