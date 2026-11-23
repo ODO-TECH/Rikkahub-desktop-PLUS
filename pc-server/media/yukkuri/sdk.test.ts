@@ -49,21 +49,31 @@ test("sdkPaths 的目录结构与官方 SDK 压缩包一致", () => {
 });
 
 test("缺件时 hint 只列真正缺的那几件(全缺/缺一件两种)", () => {
+  const windows = process.platform === "win32";
   const empty = scratchRoot();
   try {
     const all = describeSdk(empty);
     expect(all.ready).toBe(false);
-    expect(all.hint).toContain("AquesTalk.dll");
-    expect(all.hint).toContain("AqKanji2Koe.dll");
-    expect(all.hint).toContain("aqdic.bin");
+    if (windows) {
+      expect(all.hint).toContain("AquesTalk.dll");
+      expect(all.hint).toContain("AqKanji2Koe.dll");
+      expect(all.hint).toContain("aqdic.bin");
+    } else {
+      // 非 Windows 的提示先说明平台不支持;缺件清单只用于 Windows 上的排查。
+      expect(all.hint).toContain("Windows x64");
+    }
 
     mkdirSync(join(empty, "aqtk10_win", "lib64"), { recursive: true });
     writeFileSync(join(empty, "aqtk10_win", "lib64", "AquesTalk.dll"), "stub");
     const partial = describeSdk(empty);
     expect(partial.aqtk10).toBe(true);
     expect(partial.k2k).toBe(false);
-    expect(partial.hint).not.toContain("AquesTalk.dll");
-    expect(partial.hint).toContain("AqKanji2Koe.dll");
+    if (windows) {
+      expect(partial.hint).not.toContain("AquesTalk.dll");
+      expect(partial.hint).toContain("AqKanji2Koe.dll");
+    } else {
+      expect(partial.hint).toContain("Windows x64");
+    }
   } finally {
     rmSync(empty, { recursive: true, force: true });
   }
@@ -73,7 +83,8 @@ test("非 ASCII 目录被点名,而不是等 DLL 回 err=200", () => {
   const status = describeSdk(join(homedir(), "油库里"));
   expect(status.rootIsAscii).toBe(false);
   expect(status.ready).toBe(false);
-  expect(status.hint).toContain("ASCII");
+  if (process.platform === "win32") expect(status.hint).toContain("ASCII");
+  else expect(status.hint).toContain("Windows x64");
 });
 
 test("requireSdk 就绪时给出路径,未就绪时把缺件说成一句人话", () => {

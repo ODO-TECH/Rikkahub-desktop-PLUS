@@ -22,8 +22,12 @@ describe("SDK 自检(不需要 DLL)", () => {
     expect(status.ready).toBe(false);
     expect(status.rootIsAscii).toBe(true);
     expect(status.aqtk10).toBe(false);
-    expect(status.hint).toContain("aqtk10_win/lib64/AquesTalk.dll");
-    expect(status.hint).toContain("aqdic.bin");
+    if (process.platform === "win32") {
+      expect(status.hint).toContain("aqtk10_win/lib64/AquesTalk.dll");
+      expect(status.hint).toContain("aqdic.bin");
+    } else {
+      expect(status.hint).toContain("Windows x64");
+    }
   });
 
   test("requireSdk 把缺件变成一句人话,而不是 DLL 层的空指针", () => {
@@ -33,7 +37,8 @@ describe("SDK 自检(不需要 DLL)", () => {
   test("含非 ASCII 字符的目录被点名(那会伪装成「词典不正」err=200)", () => {
     const status = describeSdk(join(homedir(), "油库里 SDK"));
     expect(status.rootIsAscii).toBe(false);
-    expect(status.hint).toContain("ASCII");
+    if (process.platform === "win32") expect(status.hint).toContain("ASCII");
+    else expect(status.hint).toContain("Windows x64");
   });
 
   test("预热失败只返回 false(启动流程不该因为这个挂掉)", async () => {
