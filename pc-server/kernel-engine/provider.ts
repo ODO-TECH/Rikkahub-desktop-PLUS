@@ -99,15 +99,23 @@ export class DesktopProvider implements ModelProvider {
       const operation=stream ? "streamGenerateContent?alt=sse" : "generateContent";
       url=`${(auth.baseUrl ?? provider.baseUrl).replace(/\/$/,"")}/models/${encodeURIComponent(request.model)}:${operation}`;
     } else if(provider.useResponseApi) {
+      // Responses API 的系统提示走顶层 instructions，不塞进 input：与 Chat Completions
+      // 的 messages[role=system] 不同，input 里的 system 消息在部分兼容实现上会被
+      // 当成普通对话项，提示词优先级和缓存都会跑偏。桌面会话的系统提示必须留在
+      // instructions，follow-up 轮次同样如此。
+      const instructions=messages.filter(m=>m.role === "system")
+        .map(m=>typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""))
+        .filter(Boolean).join("\n");
       const input: any[]=[];
       for(const m of messages) {
+        if(m.role === "system") continue;
         if(m.role === "tool") input.push({type:"function_call_output",call_id:m.tool_call_id,output:m.content});
         else {
           if(m.content) input.push({role:m.role,content:m.content});
           for(const c of m.tool_calls ?? []) input.push({type:"function_call",call_id:c.id,name:c.function.name,arguments:c.function.arguments});
         }
       }
-      body={model:request.model,input,stream,store:false,...sampling,
+      body={model:request.model,...(instructions?{instructions}:{}),input,stream,store:false,...sampling,
         ...(outputCap?{max_output_tokens:request.maxOutputTokens}:{}),tools:tools.map(responseApiFunctionTool),
         reasoning:responseApiReasoningForProvider(provider,model,assistant.reasoningLevel),
         include:responseApiIncludeForProvider(provider,model)};

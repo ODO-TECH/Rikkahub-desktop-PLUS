@@ -28,16 +28,38 @@ function assert(condition: unknown, message: string): asserts condition {
 type SseItem = string | AnyRecord | { payload: string | AnyRecord; delayMs?: number };
 
 function sse(payloads: SseItem[]) {
+  // Chat Completions 模拟流要像真实 OpenAI 流一样以 finish_reason 收尾。
+  // agent-kernel 对缺少 finish_reason 的流按截断报错（它无法区分网络断开与
+  // 上游漏发结束帧），所以这里统一在 [DONE] 前补一帧；工具流补 tool_calls，
+  // 其余补 stop。Responses 的模拟流没有 choices，不会被补。
+  const chatPayloads = payloads
+    .map((item) => typeof item === "object" && item !== null && "payload" in item ? item.payload : item)
+    .filter((payload): payload is AnyRecord => typeof payload === "object" && payload !== null && Array.isArray((payload as AnyRecord).choices));
+  const hasFinish = chatPayloads.some((payload) =>
+    payload.choices.some((choice: AnyRecord) => choice.finish_reason !== undefined && choice.finish_reason !== null));
+  const hasToolCalls = chatPayloads.some((payload) =>
+    payload.choices.some((choice: AnyRecord) => Array.isArray(choice.delta?.tool_calls) && choice.delta.tool_calls.length > 0));
+  let finishPayload: AnyRecord | null = chatPayloads.length > 0 && !hasFinish
+    ? { choices: [{ delta: {}, finish_reason: hasToolCalls ? "tool_calls" : "stop" }] }
+    : null;
   return new Response(
     new ReadableStream<Uint8Array>({
       async start(controller) {
+        const enqueue = (payload: string | AnyRecord, delayMs = 15) => {
+          const text = typeof payload === "string" ? payload : JSON.stringify(payload);
+          controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
+          return Bun.sleep(delayMs);
+        };
         for (const item of payloads) {
           const payload = typeof item === "object" && item !== null && "payload" in item ? item.payload : item;
           const delayMs = typeof item === "object" && item !== null && "payload" in item ? item.delayMs ?? 15 : 15;
-          const text = typeof payload === "string" ? payload : JSON.stringify(payload);
-          controller.enqueue(new TextEncoder().encode(`data: ${text}\n\n`));
-          await Bun.sleep(delayMs);
+          if (finishPayload && payload === "[DONE]") {
+            await enqueue(finishPayload, 0);
+            finishPayload = null;
+          }
+          await enqueue(payload, delayMs);
         }
+        if (finishPayload) await enqueue(finishPayload, 0);
         controller.close();
       },
     }),

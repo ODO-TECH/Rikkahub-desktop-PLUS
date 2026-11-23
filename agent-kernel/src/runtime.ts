@@ -354,7 +354,14 @@ export class AgentRuntime {
       const tool = this.tools.get(state.call.name);
       try {
         if (!tool || !run.tools.includes(tool.name)) throw new Error(`Unknown tool: ${state.call.name}`);
-        const args = JSON.parse(state.call.arguments || "{}") as Json;
+        let args: Json;
+        try {
+          args = JSON.parse(state.call.arguments || "{}") as Json;
+        } catch (error) {
+          // 参数是模型生成的字符串，截断/坏 JSON 在派发前就要变成可读的工具错误；
+          // 保留工具名，和宿主旧路径的报错口径一致，用户才知道是哪张卡坏了。
+          throw new Error(`Invalid tool arguments JSON for ${state.call.name}: ${errorText(error)}`);
+        }
         validate(tool.parameters, args);
         if (state.approval === "auto" && (typeof tool.needsApproval === "function" ? tool.needsApproval(args) : tool.needsApproval)) {
           state.approval = "pending";
