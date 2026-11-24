@@ -11,13 +11,11 @@ export function isTauriEnvironment(): boolean {
 }
 
 /**
- * 是否在桌面壳里运行。除了 Tauri 移植版,还有一个 WinForms + WebView2 的轻量壳;
- * 后者通过注入 window.__RIKKAHUB_SHELL__ = "webview2" 表明身份(不提供 Tauri IPC)。
+ * 是否在桌面壳里运行。桌面端已统一为 Tauri 壳（原 WinForms + WebView2 轻量壳退役），
+ * 因此与 Tauri 环境判定同义；浏览器开发/自托管模式返回 false。
  */
 export function isDesktopShell(): boolean {
-  if (typeof window === "undefined") return false;
-  if ("__TAURI_INTERNALS__" in window) return true;
-  return (window as { __RIKKAHUB_SHELL__?: string }).__RIKKAHUB_SHELL__ === "webview2";
+  return isTauriEnvironment();
 }
 
 function platformLabel(platform: string): string {

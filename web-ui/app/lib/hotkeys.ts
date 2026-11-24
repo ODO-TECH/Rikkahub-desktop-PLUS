@@ -125,14 +125,22 @@ export function isValidBinding(tokens: string[]): boolean {
   return (hasModifier && hasMain) || isSingleFunctionKey;
 }
 
-/** 平台判定:macOS 用 ⌘/⌃/⌥/⇧ 符号且组合不加「+」,其余平台用 Ctrl/Alt/Shift 字样加「+」。
- *  navigator.platform 已被废弃但所有引擎仍返回;配 userAgentData 兜底,Safari/Firefox 无
- *  userAgentData 时回落 platform。模块级算一次,渲染期间平台不会变。 */
-export const IS_MAC_PLATFORM: boolean = (() => {
+/**
+ * macOS 用 ⌘/⌃/⌥/⇧ 符号且组合不加「+」；其余平台使用文字键名。
+ * 通过参数接收浏览器信息，服务器构建阶段不会读取不存在的 navigator。
+ */
+export function isMacPlatform(uaDataPlatform?: string, legacyPlatform?: string): boolean {
+  return (uaDataPlatform ?? legacyPlatform ?? "").toLowerCase().includes("mac");
+}
+
+/** navigator.platform 已废弃，但 Safari / Firefox 仍需要它作为 userAgentData 回退。 */
+function detectMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
   const uaData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
-  const platform = (uaData?.platform ?? navigator.platform ?? "").toLowerCase();
-  return platform.includes("mac");
-})();
+  return isMacPlatform(uaData?.platform, navigator.platform);
+}
+
+export const IS_MAC_PLATFORM = detectMacPlatform();
 
 /** 单个 token 的显示文本(按平台:mac 修饰键给符号,其余平台给字样)。 */
 export function formatToken(token: string): string {

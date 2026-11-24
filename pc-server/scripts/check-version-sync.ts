@@ -27,12 +27,34 @@ const uiVersion = uiVersionSource.match(/export const APP_VERSION = "([^"]+)"/)?
 const cargoLockSource = readFileSync(join(root, "web-ui", "src-tauri", "Cargo.lock"), "utf8");
 const cargoLockVersion = cargoLockSource.match(/\[\[package\]\]\nname = "rikkahub"\nversion = "([^"]+)"/)?.[1];
 
+// Alpha 发布包名与目录名由 alpha-manifest.json 驱动（scripts/package-alpha.py），
+// 它落后时会出现"应用里显示新版本、压缩包还是旧名字"的分裂。
+const alphaManifestVersion = (JSON.parse(readFileSync(join(root, "alpha-manifest.json"), "utf8")) as { version?: string }).version;
+const alphaManifest = readFileSync(join(root, "alpha-manifest.json"), "utf8");
+const alphaReleaseDirectory = alphaManifest.match(/"releaseDirectory": "\.\.\/release-([^"]+)"/)?.[1];
+const alphaManifestNote = alphaManifest.match(/"note": "Independent source tree for RikkaHub Desktop PLUS ([^"]+)/)?.[1];
+
+const readmeSource = readFileSync(join(root, "README.md"), "utf8");
+const readmeBadgeVersion = readmeSource.match(/badge\/version-([^"\s/]+)-2f81f7/)?.[1];
+const readmeVersion = readmeSource.match(/^本目录版本为 ([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)/m)?.[1];
+const readmeReleaseVersion = readmeSource.match(/^> \*\*([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?) 版本\*\*/m)?.[1];
+
+const alphaDocSource = readFileSync(join(root, "ALPHA.md"), "utf8");
+const alphaDocVersion = alphaDocSource.match(/^# RikkaHub Desktop PLUS ([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)/m)?.[1];
+
 const versions: Record<string, string | undefined> = {
   "pc-server/updates/index.ts APP_VERSION": appVersion,
   "web-ui/src-tauri/tauri.conf.json": tauriVersion,
   "web-ui/src-tauri/Cargo.toml": cargoVersion,
   "web-ui/src-tauri/Cargo.lock (package rikkahub)": cargoLockVersion,
   "web-ui/app/lib/app-version.ts": uiVersion,
+  "alpha-manifest.json": alphaManifestVersion,
+  "alpha-manifest.json releaseDirectory": alphaReleaseDirectory,
+  "alpha-manifest.json note": alphaManifestNote,
+  "README.md badge": readmeBadgeVersion,
+  "README.md release version": readmeVersion,
+  "README.md release banner": readmeReleaseVersion,
+  "ALPHA.md title": alphaDocVersion,
 };
 
 // 镜像 tag：compose 是运行配置，Docker 文档与 README 是给用户的复制示例。

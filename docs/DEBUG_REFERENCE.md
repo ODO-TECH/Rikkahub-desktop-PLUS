@@ -1,7 +1,7 @@
 # RikkaHub Desktop PLUS Debug 基准与执行规范
 
 > 建立日期：2026-10-27  
-> 适用范围：`pc-server/`、`web-ui/`、`desktop-shell/` 的跨功能调试与回归验收。  
+> 适用范围：`pc-server/`、`web-ui/` 的跨功能调试与回归验收。  
 > 本文记录的是当时工作树的诊断基线。后续模型开始前必须重新核对代码和测试状态，不得默认问题仍存在或已经修复。
 
 ## 1. 核心原则
@@ -331,8 +331,8 @@ bun run test:unit
 bunx oxlint app
 bun run build
 
-cd ../desktop-shell
-MSYS_NO_PATHCONV=1 cmd.exe /c build.cmd
+cd src-tauri
+cargo test
 ```
 
 #### D8 执行记录（2026-10-28）
@@ -343,7 +343,7 @@ MSYS_NO_PATHCONV=1 cmd.exe /c build.cmd
 | 后端 `typecheck` | 0 错误 |
 | 前端 `test:unit` | 509/509 |
 | 前端 `typecheck` / `oxlint app` | 0 错误 / 0 警告 |
-| 前端 `build` / 桌面壳 `build.cmd` | 成功（`dist\RikkaHub.exe`） |
+| 前端 `build` / 桌面壳构建（当时为 C# 壳，现已退役） | 成功（`dist\RikkaHub.exe`） |
 | 请求链 / 备份往返 / 代理 / Bash 冒烟 | 全部 PASS（退出码 0，无孤儿监听） |
 
 2 个失败为已知环境基线：非管理员会话写 `C:\WINDOWS\Temp` 报 `EPERM`

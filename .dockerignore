@@ -1,6 +1,8 @@
 web-ui/node_modules/
 pc-server/node_modules/
+**/node_modules/
 web-ui/build/
+web-ui/.react-router/
 dist/
 pc-data/
 # 本地环境变量含访问密码,不送进构建上下文(镜像里也用不到;compose 在运行期注入)。
@@ -28,8 +30,15 @@ opencode-dev/
 tmp_doc/
 # 完整 pi 源码不参与本版构建。
 pi/
-# desktop-shell/ 是 Windows 原生壳(C#/WebView2),与 Linux 镜像无关。
-desktop-shell/
+.alpha*
+alpha-evidence/
+.scratch/
+.superpowers/
+*.log
+**/*.log
+**/__pycache__/
+pc-server/assets/bash/
+pc-server/assets/bash-bundle.tar.gz
 # D11(复查)注释纠偏:下面两个不属于上面那组"gitignored 参考资料"——functions/ 是
 # 入库的 Cloudflare Pages 遥测代码,analytics/ 是本地分析资料;都与桌面端 docker
 # 构建无关,同样不进上下文。

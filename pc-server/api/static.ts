@@ -23,12 +23,15 @@ export const HTML_CSP = "object-src 'none'; base-uri 'self'; form-action 'self';
 // splash.html 作接力页底版——两处清单必须同源,否则发布产物换个布局就会静默分叉。
 export function resolveStaticRoot(): string | null {
   const candidates = [
+    // Tauri 壳显式下发的资源目录：安装版/AppImage 的 resources 与 sidecar 可执行目录
+    // 不一定同层（Linux 在 usr/lib/<app>，便携版在 exe 同级），靠猜目录会白屏。
+    process.env.RIKKAHUB_WEBUI_DIR,
     resolve(executableDir, "web-ui", "build", "client"),
     resolve(executableDir, "web-ui", "build"),
     resolve(rootDir, "web-ui", "build", "client"),
     resolve(rootDir, "web-ui", "build"),
     resolve(rootDir, "web-ui", "dist"),
-  ];
+  ].filter((candidate): candidate is string => Boolean(candidate));
   return candidates.find((candidate) => existsSync(join(candidate, "index.html"))) ?? null;
 }
 

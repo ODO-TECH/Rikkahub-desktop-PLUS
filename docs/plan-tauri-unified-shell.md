@@ -92,6 +92,9 @@ RikkaHub.exe 的主程序名。
   与 `deploy-portable.ts`、文档里的 `rikkahub-pc.exe` 不变。
 - 主程序名：`mainBinaryName` 设为 `RikkaHub`（或以打包脚本重命名兜底），保证用户双击的
   仍是 `RikkaHub.exe`。
+- 静态资源目录：安装版/AppImage 的资源目录与 sidecar 可执行目录不同层，壳通过
+  `RIKKAHUB_WEBUI_DIR` 把 `<resource_dir>/web-ui/build/client` 显式传给后端；
+  `api/static.ts` 优先读该环境变量，其余候选目录保持原样。
 - 可选：确认 Tauri/WebView2 是否支持固定用户数据目录；支持则钉到
   `<便携根>/webview2-data`，不支持则接受默认并文档记录。
 
@@ -100,9 +103,11 @@ RikkaHub.exe 的主程序名。
 - Tauri 启动时若 exe 同级存在 `shell.ini`（便携/绿色模式），读取 `dataDir` 与
   `minimizeToTray`；`serverPath` 与 `port` 不支持（sidecar 名称固定、端口走自动分配），
   读取到不同值时写日志说明，不静默行为漂移。
-- 优先级：`RIKKAHUB_PC_DATA_DIR` 环境变量（Demo/测试） > `shell.ini` > `user-config.json`
-  > 默认 `pc-data`。便携模式下 `set_data_dir` / `set_minimize_to_tray` 写回 `shell.ini`，
-  避免 AppData 的全局配置串到多份便携副本；安装版（无 `shell.ini`）仍写 user-config。
+- 优先级：`RIKKAHUB_PC_DATA_DIR` 环境变量（Demo/测试） > `shell.ini`；只要 exe 同级存在
+  `shell.ini`，就不再读 AppData 的 user-config（便携包必须自洽，不能和另一份解压目录串
+  设置）。`dataDir` 为空时退回 exe 同级 `pc-data/`。
+- 便携模式下 `set_data_dir` / `set_minimize_to_tray` 写回 `shell.ini`；安装版（无
+  `shell.ini`）仍写 user-config。
 - 验收：`shell.ini` 指向 `alpha-data` 时双击 `RikkaHub.exe` 落在该目录；`minimizeToTray=0`
   时关窗直接退出；改设置后重启仍生效，且不污染另一份便携目录。
 
@@ -119,13 +124,13 @@ RikkaHub.exe 的主程序名。
 
 ### S3 Alpha 构建与打包切换
 
-- `scripts/build-alpha.ps1`：改为调用 `bun run compile`（或补齐同样的 sidecar 复制），
-  新增 `tauri build` 步骤/新脚本 `build-tauri.ps1`；一次产出 `dist/rikkahub-pc.exe`、
-  `desktop-shell/dist/RikkaHub.exe`（过渡期）与 Tauri 壳。
-- `scripts/package-alpha.py`：便携 stage 的壳换成 Tauri 产物，布局保持：
+- `scripts/build-alpha.ps1`：补齐 sidecar 复制（`dist/rikkahub-pc.exe` →
+  `binaries/rikkahub-pc-<triple>.exe`），默认追加 `tauri build --bundles nsis`
+  （`-SkipTauri` 可跳过）；`*-msvc.cmd` 用 vswhere 自动定位 vcvars，兼容非默认安装盘。
+- `scripts/package-alpha.py`：便携 stage 固定为 Tauri 产物，布局保持：
   `RikkaHub.exe` + `rikkahub-pc.exe` + `web-ui/` + `icons/` + `fonts/` + `koffi`（若存在）
   + `shell.ini` + 许可文件；资源清单必须与 `tauri.conf.json` 的 `resources` 一致，
-  避免 NSIS 与便携包行为分叉。
+  避免 NSIS 与便携包行为分叉。S5 起 `--shell` 参数与 C# 分支一并删除。
 - Demo：去掉 `demo-shell/` 子目录（S1b + Tauri 支持环境变量后），`Demo.cmd` 直接启动
   `RikkaHub.exe` 并设置 `RIKKAHUB_ALPHA_DEMO=1`、`RIKKAHUB_PC_DATA_DIR=%~dp0demo-data`、
   `PORT=17555`、`RIKKAHUB_ALPHA_DEBUG_PORT=17556`、`RIKKAHUB_ALPHA_CDP_PORT=17567`、
@@ -149,6 +154,7 @@ RikkaHub.exe 的主程序名。
 
 ### S5 退役 C# 壳
 
+- 状态：2026-11-24 用户验收通过后已执行。
 - 顺序：S0–S3 完成、Tauri 便携包按 Alpha 验收面（真实/演示/浏览器）跑通后，再删除。
 - 删除清单：`desktop-shell/`（源码与 `sdk/`、`dist/`）、`scripts/build-alpha.ps1` 中的
   C# 构建段、`scripts/package-alpha.py` 的 C# 复制与 `demo-shell` 段；`.gitignore` 条目。
@@ -157,6 +163,9 @@ RikkaHub.exe 的主程序名。
   `docs/DEBUG_REFERENCE.md`、生成的 `README.txt`。
 - `deploy-portable.ts` 的 `RikkaHub.exe` / `rikkahub-pc.exe` 假设保持不变，S1 的命名统一
   已保证兼容；删除后跑一次部署冒烟。
+- 实际执行：通用取证脚本 `cdp-startup.js` 移到 `scripts/`；上述文档与
+  `plan-windows-sandbox.md` 同步改口径；`python -m py_compile`、`--stage-only`
+  打包与 `build-alpha.ps1 -SkipTauri` 构建链通过。
 - 删除前先列清单征得同意；`alpha-evidence/` 的历史报告不改写。
 
 ## 5. 风险与对策
@@ -203,7 +212,46 @@ S5 0.5 天，加 Windows 实机验收。合计约 4–5 个工作日。S1b 与 S
 
 ## 8. 回滚
 
-- 改动前：`backups/tauri-unified-shell-<日期>.zip` 全量快照（Alpha 无 git）。
-- 删除 C# 壳前：两套壳共存，打包脚本可切回 C# 产物。
+- 改动前：`backups/tauri-unified-shell-before-2026-11-23.zip` 全量快照（Alpha 无 git）。
+- S5 前（历史）：两套壳共存，打包脚本可切回 C# 产物（`--shell csharp`）；该回退已随
+  S5 删除。
 - 删除后：上一版 Alpha 发布包（C# 壳）继续可下载；恢复删除文件从快照解压，
   S1–S4 均为增量，不影响后端与数据格式。
+
+## 9. 实施记录（2026-11-23）
+
+已完成并验证：
+
+- S0：`cargo check --locked` 通过；`cargo test --locked` 3 个新单测通过；
+  `tauri build --no-bundle` 产出 `RikkaHub.exe`（14.3 MB）并把 sidecar 复制到同目录。
+- S1：沙盒准备进程退出后 30 秒健康轮询（读 `ui-origin.json`、`state.json` 首选端口、
+  `PORT` 环境变量，默认 17455 起 20 个候选）；sidecar 统一 `rikkahub-pc`；
+  `mainBinaryName=RikkaHub`；`RIKKAHUB_SHELL=webview2` 传递；`RIKKAHUB_WEBUI_DIR`
+  显式下发资源目录。真实受限沙盒开关未在本轮验收（涉及系统完整性标签）。
+- S1b：`shell.ini` 的 `dataDir` / `minimizeToTray` 读写；便携模式不再读 AppData；
+  实测真实模式落 `alpha-data/`。
+- S2：删除 `__RIKKAHUB_SHELL__` 与 `rikkahub://restart` 分支；`bun run typecheck` 通过，
+  `bun test app` 588 通过，前端构建通过。
+- S3：`build-alpha.ps1` 增加 sidecar 复制、Tauri 构建与 `dist/RikkaHub.exe` 归档；
+  `package-alpha.py` 固定 Tauri 产物（S5 起无 `--shell` 参数）；`alpha-manifest.json` 纳入版本同步；
+  `tauri-msvc.cmd` / `cargo-msvc.cmd` 用 vswhere 自动定位 vcvars。
+  便携 stage 实测：真实模式健康、WebView 落在 `http://localhost:17555/`（CDP 取证）；
+  `Demo.cmd` + `alpha-smoke.py` 15 项全过；NSIS 产出
+  `RikkaHub Desktop PLUS_0.2.0_x64-setup.exe`（约 79.5 MB）。
+  NSIS 安装/卸载、安装器数据目录 handoff 与假安装包更新链路未执行，留给实机验收。
+- S3 收尾：完整 `build-alpha.ps1` 一次跑通（含 NSIS，镜像 + 清空代理环境变量）；
+  `package-alpha.py --compact` 重建源码与便携归档，Windows zip 共 576 项、不含
+  `demo-shell/`，顶层为 Tauri `RikkaHub.exe` + `rikkahub-pc.exe` + `shell.ini`；
+  归档与安装器已归入 `release-0.2.0/`，校验值见该目录 `SHA256SUMS.txt`；
+  源码包已剔除 C# 壳。
+- 本机网络下 NSIS 下载需要镜像并清空代理环境变量，配方已写入 `docs/BUILD.md` §3。
+- S5：用户验收通过后删除 `desktop-shell/`（12 MB）及构建/打包 C# 分支；通用
+  `cdp-startup.js` 移到 `scripts/`；文档口径同步更新；`-SkipTauri` 构建与
+  `--stage-only` 打包验证通过。
+
+未完成：
+
+- S4 Linux AppImage：工作流已加（`build-linux.yml` 的 `tauri-appimage` 任务），
+  无 Linux 实机，只承诺 CI 构建。
+- 受限沙盒自重启的端到端验收：需要用户同意后开关一次沙盒。
+

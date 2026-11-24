@@ -1,4 +1,4 @@
-﻿import * as React from "react";
+import * as React from "react";
 import { Bot } from "lucide-react";
 import { toast } from "sonner";
 import api from "~/services/api";

@@ -8,7 +8,7 @@ import { FlaskConical, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import api from "~/services/api";
-import type { MemoryExperimentSettings, Settings } from "~/types";
+import type { MemoryExperimentSettings } from "~/types";
 import {
   SettingsGroup,
   SettingsRow,

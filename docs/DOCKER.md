@@ -25,7 +25,7 @@ docker compose logs -f
 访问密码在 compose 里是**必填项**：没有设置时 `docker compose up` 会直接报错退出，而不是起一个不鉴权的服务。只构建镜像、不用 compose 时，密码同样必须显式给出：
 
 ```bash
-docker build -t rikkahub-desktop-plus:0.2.0 .
+docker build -t rikkahub-desktop-plus:0.2.1 .
 docker run -d --name rikkahub-plus \
   --restart unless-stopped \
   --read-only \
@@ -35,7 +35,7 @@ docker run -d --name rikkahub-plus \
   -p 11451:11451 \
   -e RIKKAHUB_PASSWORD='换成你的密码' \
   -v "$PWD/pc-data:/app/pc-data" \
-  rikkahub-desktop-plus:0.2.0
+  rikkahub-desktop-plus:0.2.1
 ```
 
 `docker run` 不会继承 compose 里的加固项。上面几个参数至少要补齐 `--read-only`、`--tmpfs /tmp`、`--cap-drop ALL`、`--security-opt no-new-privileges`；少了 `--read-only` 根 fs 就是可写的，沙盒会如实报 `not_enforced`。镜像已经固定 `USER 1000:1000`，不需要再传 `--user`。
@@ -48,11 +48,11 @@ mkdir -p pc-data && sudo chown -R 1000:1000 pc-data
 
 `./pc-data` 是 bind mount，权限完全由宿主目录决定，所以升级到非 root 后必须 `chown`。改用 Docker named volume（例如 `-v rikkahub-data:/app/pc-data`）时，卷首次创建会继承镜像内 `/app/pc-data` 的 `1000:1000` 所有权，不需要额外 `chown`；但备份与迁移要按卷操作（`docker volume`），不能直接拷宿主目录。
 
-首次启动需要克隆 pi 引擎并编译前端与后端，耗时取决于网络与机器，通常数分钟到十几分钟；之后 `docker compose up -d` 会复用构建缓存。启动完成后打开 `http://<NAS 地址>:11451`。
+首次启动需要下载 Bun/Debian 基础镜像与依赖，并编译前端和后端，耗时取决于网络与机器；之后 `docker compose up -d` 会复用构建缓存。启动完成后打开 `http://<NAS 地址>:11451`。
 
 飞牛 OS 的 Docker 应用里也可以用「项目 / Compose」导入本文件，但 `build:` 需要完整的仓库上下文；更稳的做法是 SSH 到 NAS，在仓库目录里执行上面的 `docker compose up -d --build`，之后在飞牛 Docker 面板里管理容器。
 
-把源码放到 NAS 上时，建议单独一个目录（例如 `/vol1/1000/docker/rikkahub-desktop-plus`），只放仓库文件，构建产物与 `pc-data/` 都在这下面。构建阶段要访问 GitHub 克隆 pi 引擎；NAS 出网受限时用 compose 里注释掉的 `build.args` 传 `HTTPS_PROXY`。
+把源码放到 NAS 上时，建议单独一个目录（例如 `/vol1/1000/docker/rikkahub-desktop-plus`），只放仓库文件，构建产物与 `pc-data/` 都在这下面。构建使用本地轻量内核源码，无需克隆 pi 引擎；NAS 出网受限时用 compose 里注释掉的 `build.args` 传 `HTTPS_PROXY` 下载依赖。
 
 ### 安全模型：挂载表就是边界
 

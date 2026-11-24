@@ -9,7 +9,7 @@
 # 侧边栏「工作区」页签的演示工作区（本地托管目录），同样是一次性验收数据。
 /.dev-demo-ws/
 
-# 构建产物 —— 由 bun run build / compile / tauri build / desktop-shell\build.cmd 重新生成。
+# 构建产物 —— 由 bun run build / compile / tauri build 重新生成。
 /dist/
 /web-ui/build/
 /web-ui/.react-router/
@@ -18,9 +18,6 @@
 /web-ui/src-tauri/permissions/
 /web-ui/src-tauri/target/
 /target/
-/desktop-shell/dist/
-/desktop-shell/sdk/
-/desktop-shell/*_master.png
 
 # 内嵌 bash 运行时的二进制产物与 staging（~8.5MB/24MB）。由
 # pc-server/scripts/build-bash-bundle.ts 从本机 Git for Windows 抽取生成：
@@ -40,7 +37,6 @@ node_modules/
 
 # 日志与本地调试残留
 *.log
-/desktop-shell/webview2-data/
 /shell.ini
 
 # 编辑器 / 操作系统

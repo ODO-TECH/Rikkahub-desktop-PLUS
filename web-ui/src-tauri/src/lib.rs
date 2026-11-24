@@ -1,6 +1,6 @@
 //! Rikkahub PC — Tauri shell.
 //!
-//! The Bun-compiled `rikkahub-server.exe` is spawned as a sidecar so the existing HTTP +
+//! The Bun-compiled `rikkahub-pc.exe` is spawned as a sidecar so the existing HTTP +
 //! SSE backend keeps working unchanged. The webview points at the sidecar's loopback
 //! address. The shell adds:
 //!   - Window lifecycle (custom titlebar commands, drag region)
@@ -237,16 +237,25 @@ fn consume_installer_data_dir_handoff(app: &AppHandle) {
 }
 
 /// Resolve the effective data directory in this priority order:
-///   1. env var `RIKKAHUB_PC_DATA_DIR` (developer/test override)
-///   2. value persisted in user-config.json (written only by this shell — either the
-///      Settings UI's set_data_dir command, or the startup merge of the installer's
-///      plain-text handoff file; the installer never writes the JSON itself)
-///   3. `pc-data/` next to the running exe (portable default)
+///   1. env var `RIKKAHUB_PC_DATA_DIR` (developer/test override; Demo.cmd uses it)
+///   2. portable `shell.ini`'s `dataDir` (next to the exe; keeps alpha-data/demo-data
+///      semantics without touching AppData). If the file exists but the key is empty,
+///      the portable default `pc-data/` wins — AppData must not leak into a portable pack.
+///   3. value persisted in user-config.json (installed builds)
+///   4. `pc-data/` next to the running exe (portable default)
 fn resolve_data_dir(app: &AppHandle) -> PathBuf {
     if let Ok(env) = std::env::var("RIKKAHUB_PC_DATA_DIR") {
         if !env.trim().is_empty() {
             return PathBuf::from(env);
         }
+    }
+    if let Some(dir) = portable_data_dir() {
+        return dir;
+    }
+    // A portable pack owns its config even when `dataDir` is empty: falling back
+    // to AppData there would make two extracted copies share one setting again.
+    if portable_ini_path().exists() {
+        return exe_dir().join("pc-data");
     }
     let cfg = load_user_config(app);
     if let Some(dir) = cfg.data_dir {
@@ -264,22 +273,291 @@ fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+// --- Portable mode: `shell.ini` next to the exe ---------------------------
+//
+// The C# portable shell (and the Alpha release pack) uses `shell.ini` for four
+// keys: port / minimizeToTray / serverPath / dataDir. The Tauri shell keeps the
+// two user-visible ones (dataDir, minimizeToTray) so a portable pack behaves the
+// same either way; port and serverPath are superseded by auto-port and the fixed
+// sidecar name, and are reported once instead of being silently ignored.
+
+fn portable_ini_path() -> PathBuf {
+    exe_dir().join("shell.ini")
+}
+
+fn read_portable_ini() -> Option<Vec<(String, String)>> {
+    let text = fs::read_to_string(portable_ini_path()).ok()?;
+    let mut entries = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            entries.push((key.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    Some(entries)
+}
+
+fn portable_ini_value(key: &str) -> Option<String> {
+    read_portable_ini()?
+        .into_iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
+}
+
+/// `dataDir` from the portable `shell.ini`, resolved against the exe directory
+/// when relative. `None` = no portable file / empty value.
+fn portable_data_dir() -> Option<PathBuf> {
+    let value = portable_ini_value("dataDir")?;
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        exe_dir().join(path)
+    })
+}
+
+fn parse_ini_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn portable_minimize_to_tray() -> Option<bool> {
+    parse_ini_bool(&portable_ini_value("minimizeToTray")?)
+}
+
+/// Replace (or append) one `key=value` line in `shell.ini`, temp+rename so a
+/// crash mid-write cannot leave the portable config truncated.
+fn write_portable_ini_value(key: &str, value: &str) -> Result<(), String> {
+    let path = portable_ini_path();
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for raw in text.lines() {
+        let is_target = raw
+            .trim()
+            .split_once('=')
+            .map(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+            .unwrap_or(false);
+        if is_target && !replaced {
+            lines.push(format!("{key}={value}"));
+            replaced = true;
+        } else if !is_target {
+            lines.push(raw.to_string());
+        }
+    }
+    if !replaced {
+        lines.push(format!("{key}={value}"));
+    }
+    let content = format!("{}\n", lines.join("\n"));
+    let tmp = path.with_extension("ini.tmp");
+    fs::write(&tmp, content.as_bytes()).map_err(|e| format!("Failed to write shell.ini: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("Failed to commit shell.ini: {e}"))?;
+    Ok(())
+}
+
+/// One-time report for the portable keys the Tauri shell does not honor.
+fn log_ignored_portable_keys() {
+    let Some(entries) = read_portable_ini() else {
+        return;
+    };
+    for (key, value) in entries {
+        if !value.is_empty()
+            && (key.eq_ignore_ascii_case("port") || key.eq_ignore_ascii_case("serverPath"))
+        {
+            eprintln!(
+                "[portable] shell.ini {key}={value} ignored by the Tauri shell \
+                 (auto port / fixed sidecar name)"
+            );
+        }
+    }
+}
+
+/// One loopback health probe with deliberately short budgets: this runs inside the
+/// sandbox-relaunch wait and must not stack up on dead ports. Returns true only for
+/// a 200 whose body contains `"ok":true` (the C# shell's exact acceptance rule).
+fn probe_backend_health(port: u16) -> bool {
+    use std::io::Read;
+    let addr = match format!("127.0.0.1:{port}").parse() {
+        Ok(addr) => addr,
+        Err(_) => return false,
+    };
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(150))
+    else {
+        return false;
+    };
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(600)));
+    let request = format!(
+        "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut body = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                body.extend_from_slice(&chunk[..n]);
+                if body.len() > 16 * 1024 {
+                    break;
+                }
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(&body);
+    text.starts_with("HTTP/1.1 200") && text.contains("\"ok\":true")
+}
+
+/// Last UI origin recorded by the backend (`ui-origin.json`) plus its port.
+fn recorded_origin(data_dir: &Path) -> Option<(u16, String)> {
+    let raw = fs::read_to_string(data_dir.join("ui-origin.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    if value.get("v")?.as_i64()? != 1 {
+        return None;
+    }
+    let origin = value.get("origin")?.as_str()?.to_string();
+    if !origin.starts_with("http://") {
+        return None;
+    }
+    let port = origin.rsplit(':').next()?.trim_end_matches('/').parse::<u16>().ok()?;
+    (port > 0).then_some((port, origin))
+}
+
+/// Preferred port the backend peeked from `state.json` before binding. The shell
+/// never passes PORT, so this is the only way to predict where the relaunched
+/// sidecar will land after a restricted-sandbox restart.
+fn recorded_preferred_port(data_dir: &Path) -> Option<u16> {
+    let raw = fs::read_to_string(data_dir.join("state.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let port = value.get("settings")?.get("preferredPort")?.as_u64()?;
+    u16::try_from(port).ok().filter(|p| *p > 0)
+}
+
+/// Candidate ports in lookup order: explicit PORT env (Demo.cmd), the recorded
+/// origin, the persisted preferred port, and the desktop default. Each seed is
+/// expanded by the backend's 20-port upward walk.
+fn backend_port_candidates(data_dir: &Path) -> Vec<u16> {
+    let mut seeds: Vec<u16> = Vec::new();
+    let mut add_seed = |port: u16| {
+        if port > 0 && !seeds.contains(&port) {
+            seeds.push(port);
+        }
+    };
+    if let Ok(value) = std::env::var("PORT") {
+        if let Ok(port) = value.trim().parse::<u16>() {
+            add_seed(port);
+        }
+    }
+    if let Some((port, _)) = recorded_origin(data_dir) {
+        add_seed(port);
+    }
+    if let Some(port) = recorded_preferred_port(data_dir) {
+        add_seed(port);
+    }
+    add_seed(17455);
+
+    let mut ports = Vec::new();
+    for seed in seeds {
+        for offset in 0..20u16 {
+            let port = seed.saturating_add(offset);
+            if port > 0 && !ports.contains(&port) {
+                ports.push(port);
+            }
+        }
+    }
+    ports
+}
+
+/// Look for a backend that outlived the shell's direct child (restricted-sandbox
+/// relaunch). Probes run in parallel with short budgets.
+fn discover_running_backend(data_dir: &Path) -> Option<UiStartup> {
+    let candidates = backend_port_candidates(data_dir);
+    let recorded = recorded_origin(data_dir);
+    let found: Option<u16> = std::thread::scope(|scope| {
+        let handles: Vec<_> = candidates
+            .iter()
+            .map(|&port| scope.spawn(move || (port, probe_backend_health(port))))
+            .collect();
+        for handle in handles {
+            if let Ok((port, true)) = handle.join() {
+                return Some(port);
+            }
+        }
+        None
+    });
+    let found = found?;
+    let origin = recorded
+        .filter(|(port, _)| *port == found)
+        .map(|(_, origin)| origin)
+        .unwrap_or_else(|| format!("http://localhost:{found}"));
+    Some(UiStartup {
+        port: found,
+        ui_entry: format!("{origin}/"),
+        ui_origin: origin,
+    })
+}
+
+/// C# 壳的等价逻辑：受限沙盒的准备进程会先退出——低完整性后端用
+/// `bInheritHandles=false` 拉起，端口标记永远回不到壳的 stdout——所以"子进程退出但
+/// 没有端口标记"不能直接判死，要在 30 秒内寻找重新落地的后端。真正的失败
+/// （迁移崩溃/目录锁/端口耗尽）不会出现健康的 /api/health，30 秒后仍报原错误。
+fn await_relaunched_backend(
+    data_dir: &Path,
+    fatal_message: &Mutex<Option<String>>,
+) -> Result<UiStartup, String> {
+    if let Some(message) = fatal_message.lock().unwrap().clone() {
+        return Err(format!("Rikkahub 启动失败：\n\n{message}"));
+    }
+    let started = Instant::now();
+    let mut last_log = Instant::now();
+    loop {
+        if let Some(startup) = discover_running_backend(data_dir) {
+            return Ok(startup);
+        }
+        if started.elapsed() >= Duration::from_secs(30) {
+            return Err(startup_failure_message(fatal_message));
+        }
+        if last_log.elapsed() >= Duration::from_secs(5) {
+            last_log = Instant::now();
+            eprintln!(
+                "[startup] sidecar exited before the port marker; probing for a relaunched backend ({:.0}s/30)...",
+                started.elapsed().as_secs_f64()
+            );
+        }
+        thread::sleep(Duration::from_millis(1000));
+    }
+}
+
 /// Block until the sidecar prints its `RIKKAHUB_PORT:<n>` marker (meaning Bun.serve bound
 /// successfully — the UI_* markers arrive earlier on the same stream) or the child dies.
 /// R1-1：服务端已改为"先绑端口打标记、迁移后置"，标记正常应在数秒内到达；子进程仍存活
 /// 就继续等——旧的 20s 硬超时会把正在迁移大数据的后端连坐杀死（迁移下次从头再来），
 /// 形成"每次启动都超时被杀"的死循环。真正的失败（端口耗尽/数据目录被锁/迁移崩溃）
 /// 都会让子进程退出，由 child_dead 分支兜住并展示 RIKKAHUB_FATAL 标记带出的真实原因（R1-4）。
+/// 受限沙盒自重启时子进程（准备进程）会提前正常退出，此时转入 30s 健康轮询而不是判死。
 fn wait_for_sidecar_startup(
     port_rx: std::sync::mpsc::Receiver<UiStartup>,
     child_dead: &AtomicBool,
     fatal_message: &Mutex<Option<String>>,
+    data_dir: &Path,
 ) -> Result<UiStartup, String> {
     let started = Instant::now();
     let mut last_log = Instant::now();
     loop {
         if child_dead.load(Ordering::Acquire) {
-            return Err(startup_failure_message(fatal_message));
+            return await_relaunched_backend(data_dir, fatal_message);
         }
         match port_rx.recv_timeout(Duration::from_millis(200)) {
             Ok(startup) => return Ok(startup),
@@ -294,8 +572,9 @@ fn wait_for_sidecar_startup(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 // stdout pump task ended without ever emitting a port marker — the sidecar
-                // process has exited. Treat it the same as child_dead.
-                return Err(startup_failure_message(fatal_message));
+                // process has exited. Treat it the same as child_dead: it may be the
+                // restricted-sandbox prepare process that relaunched the real backend.
+                return await_relaunched_backend(data_dir, fatal_message);
             }
         }
     }
@@ -318,15 +597,16 @@ type FatalMessage = Arc<Mutex<Option<String>>>;
 
 fn spawn_sidecar(
     app: &AppHandle,
+    data_dir: &Path,
 ) -> Result<(CommandChild, Arc<AtomicBool>, FatalMessage, std::sync::mpsc::Receiver<UiStartup>), String> {
-    let data_dir = resolve_data_dir(app);
-    fs::create_dir_all(&data_dir)
+    fs::create_dir_all(data_dir)
         .map_err(|e| format!("Failed to create data dir {}: {e}", data_dir.display()))?;
+    log_ignored_portable_keys();
 
     let shell = app.shell();
-    let cmd = shell
-        .sidecar("rikkahub-server")
-        .map_err(|e| format!("Sidecar binary `rikkahub-server` not found: {e}"))?
+    let mut cmd = shell
+        .sidecar("rikkahub-pc")
+        .map_err(|e| format!("Sidecar binary `rikkahub-pc` not found: {e}"))?
         // `--no-open` skips the sidecar's "auto-launch system browser" behavior, which is
         // meant for portable / standalone use. Inside the Tauri shell the webview already
         // navigates to the same URL, so a second browser window would just be noise.
@@ -334,10 +614,22 @@ fn spawn_sidecar(
         // (界面 origin 变化时在旧 origin 挂临时接力页搬界面状态)只在有界面消费者时
         // 启用——否则无头实例会在可能是生产端口的旧端口上挂监听。
         .args(["--no-open", "--ui-shell"])
-        .env("RIKKAHUB_PC_DATA_DIR", &data_dir);
-        // NOTE: we deliberately do NOT pass PORT here. The sidecar now picks its own port
-        // (8080 by default, walking up on conflict) and reports the actual value via the
-        // `RIKKAHUB_PORT:<n>` stdout marker parsed below. Hardcoding 8080 would make the
+        // 壳管后端的标志（C# 壳也设同名值）。服务端据此拒绝进程内自重启：
+        // 自重启会让壳持有的进程句柄与 Job Object 生命周期脱节。
+        .env("RIKKAHUB_SHELL", "webview2")
+        .env("RIKKAHUB_PC_DATA_DIR", data_dir);
+    // Installer/AppImage resources are not guaranteed to sit next to the sidecar
+    // (Linux puts them under usr/lib/<app>). Hand the exact web-ui root over instead
+    // of making routeStatic guess; portable layouts still work via the exe-dir fallback.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        cmd = cmd.env(
+            "RIKKAHUB_WEBUI_DIR",
+            resource_dir.join("web-ui").join("build").join("client"),
+        );
+    }
+        // NOTE: we deliberately do NOT pass PORT here. The sidecar picks its own port
+        // (17455 by default, walking up on conflict) and reports the actual value via the
+        // `RIKKAHUB_PORT:<n>` stdout marker parsed below. Hardcoding a port would make the
         // auto-port feature impossible, since the env override has higher priority than the
         // user's preferred-port setting.
 
@@ -347,7 +639,7 @@ fn spawn_sidecar(
 
     // Tie the sidecar's lifetime to the shell process via a Windows Job Object so that even
     // if the user kills `rikkahub.exe` from Task Manager (or it crashes), the kernel reaps
-    // `rikkahub-server.exe` along with it. Without this the sidecar would linger as an orphan
+    // `rikkahub-pc.exe` along with it. Without this the sidecar would linger as an orphan
     // holding its port and the next launch would fail to bind.
     #[cfg(windows)]
     bind_to_kill_on_close_job(child.pid());
@@ -509,6 +801,11 @@ fn get_data_dir(app: AppHandle) -> Result<String, String> {
 fn set_data_dir(app: AppHandle, path: String) -> Result<(), String> {
     let trimmed = path.trim().to_string();
     let _guard = lock_config_write();
+    // Portable mode owns its config: keep the change in shell.ini so two
+    // extracted copies don't share one AppData setting.
+    if portable_ini_path().exists() {
+        return write_portable_ini_value("dataDir", &trimmed);
+    }
     let mut cfg = load_user_config(&app);
     cfg.data_dir = if trimmed.is_empty() { None } else { Some(trimmed) };
     save_user_config(&app, &cfg)
@@ -553,6 +850,9 @@ fn tray_strings() -> TrayStrings {
 /// feature is active on first launch without the user having to opt in —
 /// matching Discord / Telegram / WeChat convention.
 fn minimize_to_tray_enabled(app: &AppHandle) -> bool {
+    if portable_ini_path().exists() {
+        return portable_minimize_to_tray().unwrap_or(true);
+    }
     load_user_config(app).minimize_to_tray.unwrap_or(true)
 }
 
@@ -635,6 +935,9 @@ fn get_minimize_to_tray(app: AppHandle) -> bool {
 #[tauri::command]
 fn set_minimize_to_tray(app: AppHandle, enabled: bool) -> Result<(), String> {
     let _guard = lock_config_write();
+    if portable_ini_path().exists() {
+        return write_portable_ini_value("minimizeToTray", if enabled { "1" } else { "0" });
+    }
     let mut cfg = load_user_config(&app);
     cfg.minimize_to_tray = Some(enabled);
     save_user_config(&app, &cfg)
@@ -767,13 +1070,14 @@ pub fn run() {
             // 安装器数据目录交接必须先于 spawn_sidecar(内部 resolve_data_dir 决定
             // 传给后端的 RIKKAHUB_PC_DATA_DIR),否则全新安装的首次启动用错目录。
             consume_installer_data_dir_handoff(&handle);
+            let data_dir = resolve_data_dir(&handle);
 
             // Start the sidecar, then wait for it to print its `RIKKAHUB_PORT:<n>` marker. The
-            // sidecar now picks its own port (8080 by default, walking up on conflict) and we
+            // sidecar now picks its own port (17455 by default, walking up on conflict) and we
             // can't know which one until that line arrives. If the sidecar dies early — most
             // commonly EADDRINUSE because the whole candidate range is busy — show an error
             // dialog and quit; otherwise the webview would sit on a dead/orphan URL.
-            let (port_rx, child_dead, fatal_message) = match spawn_sidecar(&handle) {
+            let (port_rx, child_dead, fatal_message) = match spawn_sidecar(&handle, &data_dir) {
                 Ok((child, dead, fatal, port_rx)) => {
                     if let Some(state) = handle.try_state::<SidecarState>() {
                         *state.child.lock().unwrap() = Some(child);
@@ -791,7 +1095,7 @@ pub fn run() {
             // 但极端情况（安全软件拦截、磁盘极慢）下可能更久——在主线程上等会冻结窗口。
             let wait_handle = handle.clone();
             thread::spawn(move || {
-                let startup = match wait_for_sidecar_startup(port_rx, &child_dead, &fatal_message) {
+                let startup = match wait_for_sidecar_startup(port_rx, &child_dead, &fatal_message, &data_dir) {
                     Ok(startup) => startup,
                     Err(msg) => {
                         show_startup_error(&wait_handle, &msg);
@@ -869,4 +1173,61 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_ini_bool, recorded_origin, recorded_preferred_port};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "rikkahub-shell-test-{}-{tag}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn shell_ini_booleans_cover_csharp_spellings() {
+        assert_eq!(parse_ini_bool("1"), Some(true));
+        assert_eq!(parse_ini_bool("0"), Some(false));
+        assert_eq!(parse_ini_bool("TRUE"), Some(true));
+        assert_eq!(parse_ini_bool(" false "), Some(false));
+        assert_eq!(parse_ini_bool("maybe"), None);
+    }
+
+    #[test]
+    fn origin_record_carries_port() {
+        let dir = temp_dir("origin");
+        fs::write(
+            dir.join("ui-origin.json"),
+            r#"{"v":1,"origin":"http://localhost:17456","updatedAt":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            recorded_origin(&dir),
+            Some((17456, "http://localhost:17456".to_string()))
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn preferred_port_comes_from_state() {
+        let dir = temp_dir("state");
+        fs::write(
+            dir.join("state.json"),
+            r#"{"settings":{"preferredPort":17565}}"#,
+        )
+        .unwrap();
+        assert_eq!(recorded_preferred_port(&dir), Some(17565));
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

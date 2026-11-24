@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RikkaHub Desktop PLUS",
-  "version": "0.2.0",
+  "mainBinaryName": "RikkaHub",
+  "version": "0.2.1",
   "identifier": "com.rikkahub.pc",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -55,7 +56,7 @@
       "../../fonts/": "fonts/",
       "../build/client/": "web-ui/build/client/"
     },
-    "externalBin": ["binaries/rikkahub-server"],
+    "externalBin": ["binaries/rikkahub-pc"],
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper",

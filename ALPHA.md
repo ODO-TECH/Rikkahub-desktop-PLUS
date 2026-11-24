@@ -1,10 +1,10 @@
-# RikkaHub Desktop PLUS 0.2.0
+# RikkaHub Desktop PLUS 0.2.1
 
 本目录是独立 Alpha 源码，原 `rikkahub-desktop-plus/` 未作为修改目标。重构前的源码（包括原有未提交修改）和退役的 pi 集成均另有 ZIP 备份。Alpha 使用独立数据目录，不要求迁移原有个人数据。
 
 ## 使用
 
-解压便携测试包后双击 **`Demo.cmd`**。它通过原生 WinForms / WebView2 桌面壳运行本地模拟模型，不需要 API key。Windows 需已安装 WebView2 Runtime；也可运行 `Demo-browser.cmd` 使用系统浏览器。
+解压便携测试包后双击 **`Demo.cmd`**。它通过 Tauri 桌面壳运行本地模拟模型，不需要 API key。Windows 需已安装 WebView2 Runtime；也可运行 `Demo-browser.cmd` 使用系统浏览器。
 
 演示入口：
 
@@ -40,7 +40,9 @@ flowchart TD
 
 `agent-kernel/` 没有第三方运行时依赖，只使用 Bun 的 SQLite、fetch 和流。桌面端在 `pc-server/kernel-engine/` 适配现有供应商、工具、审批、消息流和完成验证。保留的 OAuth 协议选段在 `vendor/pi-auth/`，无需拉取完整 pi；构建脚本、CI 与 Dockerfile 已移除 pi 克隆步骤。桌面完整应用仍有原有的 PDF、界面、SSH 等依赖，轻量内核不等同于整个客户端只有一个小文件。
 
-0.2.0 便携包提供 ZIP 和更小的 7z；两者包含相同程序。字体使用完整字形的 WOFF2，保留原字体选项及已有设置。维护字体时可运行 `scripts/compact-fonts.py`；日常构建不需要字体转换依赖。打包从干净暂存目录生成，排除个人数据、日志和开发依赖，避免历次构建资源累积。
+0.2.1 Windows 便携包继续提供 ZIP 和更小的 7z；Linux x64 提供独立的 tar.gz（服务端二进制与前端静态资源，通过浏览器访问），不构建 AppImage 或 Linux 桌面壳。Docker 提供容器部署形态。
+
+字体使用完整字形的 WOFF2，保留原字体选项及已有设置。维护字体时可运行 `scripts/compact-fonts.py`；日常构建不需要字体转换依赖。打包从干净暂存目录生成，排除个人数据、日志和开发依赖，避免历次构建资源累积。
 
 核心能力包括模型与工具循环、只读工具有限并行、写操作互斥、流中取消、受限网络重试、共享请求和 token 预算、上下文压缩、大输出分页、输入排队、工具等待、SQLite 恢复标记与工具结果核对。桌面端审批使用已有持久消息与问答流程；进程中断会标记运行中任务，不能承诺在任意工具中途重启后无损自动续跑。
 
@@ -50,7 +52,7 @@ Superagent 是小型任务图协调器：最多 6 项任务、2 个 worker，依
 
 ## 构建与检查
 
-Windows 推荐 Bun 1.4.2；在此目录执行 `powershell -ExecutionPolicy Bypass -File scripts/build-alpha.ps1`。源码包包含锁文件、内核、选段 OAuth 源码、WebView2 SDK 引用和现有 bash bundle。重建 bash bundle 时需要 Git for Windows；重新获取桌面 SDK 可运行 `desktop-shell/fetch-sdk.cmd`。不需要克隆 pi 或 DSH。
+Windows 推荐 Bun 1.4.2；在此目录执行 `powershell -ExecutionPolicy Bypass -File scripts/build-alpha.ps1`。源码包包含锁文件、内核、选段 OAuth 源码和现有 bash bundle。重建 bash bundle 时需要 Git for Windows。不需要克隆 pi 或 DSH。
 
 分别验证：
 
@@ -77,10 +79,14 @@ bun run build
 
 OpenAI 兼容文本/工具流已用于端到端检查；Claude 签名思考与 Gemini functionCall 签名及工具结果回放经过本地协议测试。Responses 和 OAuth 复用宿主适配，但没有真实账号的端到端验证。Gemini Interactions 在此 Alpha 明确不支持；可关闭该开关使用普通 Gemini 协议。多模态载荷会保留，尚未进行所有供应商的真实多模态验收。
 
-本版未打包可选的油库里语音 SDK。Linux、Docker、Tauri 配方保留并更新源码布局，本轮发布物和界面验收仅针对 Windows x64。历史文档中的 pi 性能数据不代表本版测量。真实模型效率与成本还需要在配置后的供应商上持续评估。
+本版未打包可选的油库里语音 SDK。Tauri 桌面壳只作为 Windows x64 发布目标；Linux tar.gz 和 Docker 均通过本地构建与启动检查。历史文档中的 pi 性能数据不代表本版测量。真实模型效率与成本还需要在配置后的供应商上持续评估。
 
 ## 0.2.0 修复与验收
 
 修复持续思考被固定 120 秒计时器截断的问题：响应头等待与流空闲分开计时，持续输出不会因为总时长达到 120 秒而失败。新增共享并发控制、下一轮档位快照和纯 Chat 类型。调试端口新增 `GET/PATCH /debug/settings`、`/debug/api/*` 和 `POST /debug/ui`；控制台可编辑完整设置，凭据脱敏写回保留原值。
 
 本轮使用临时供应商 LongCat-2.5 完成并发、subagent、任务图和真实文件读写检查；详细测试数据、125.71 秒墙钟回归与完整限制由维护者本地留存。本地测试数据及临时 key 不进入归档。
+
+## 0.2.1 前端与平台构建验收
+
+前端类型检查通过，591 项单元测试全部通过，生产构建成功。Windows Tauri 前端继续使用同一份 React Router SPA。Linux x64 tar.gz 和 Docker 镜像由 Debian 13 / WSL 2 构建，并各自完成运行检查；Linux 发布物仅为 tar.gz。

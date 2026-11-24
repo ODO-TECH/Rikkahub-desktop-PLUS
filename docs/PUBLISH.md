@@ -57,7 +57,7 @@ git push -u origin main
 ## 3. 推送后立刻自查这三件事
 
 1. **打开仓库文件树**，确认没有 `pc-data/`、`node_modules/`、`dist/`、`web-ui/build/`、
-   `desktop-shell/sdk/`、`desktop-shell/dist/`。这些都是本机产物与隐私数据，
+   `web-ui/src-tauri/target/`。这些都是本机产物与隐私数据，
    `.gitignore` 已经拦住，肉眼再确认一次不亏。
 2. **用 GitHub 的代码搜索查你自己**：在仓库页面上按 `.` 打开搜索，
    输入你的邮箱、QQ/手机号、Windows 用户名、网盘链接特征，期望结果都是 **0 命中**。

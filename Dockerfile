@@ -46,13 +46,14 @@ RUN bun install
 # 会让 bun build 解析 import 直接失败)。整目录复制;node_modules 由上面的 bun install
 # 在镜像内重建(.dockerignore 排除宿主 node_modules,避免 Windows 依赖覆盖 Linux 依赖)。
 COPY pc-server/ ./
+RUN bun run scripts/prepare-linux-build.ts
 RUN set -eux; \
     case "$TARGETARCH" in \
       amd64) BUN_TARGET=bun-linux-x64 ;; \
       arm64) BUN_TARGET=bun-linux-arm64 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH"; exit 1 ;; \
     esac; \
-    bun build --compile --target="$BUN_TARGET" server.ts --outfile rikkahub-pc
+    bun build --compile --target="$BUN_TARGET" --external=cpu-features --external=ssh2/lib/protocol/crypto/build/Release/sshcrypto.node server.ts --outfile rikkahub-pc
 
 #  — Stage 2: Runtime —
 # 为什么不再是 distroless(Docker 侧 Linux 适配的核心):

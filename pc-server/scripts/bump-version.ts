@@ -54,6 +54,43 @@ const targets: Array<{ file: string; pattern: RegExp; replacement: string }> = [
     pattern: /(\[\[package\]\]\nname = "rikkahub"\nversion = )"[^"]+"/,
     replacement: `$1"${newVersion}"`,
   },
+  {
+    // Alpha 打包名（scripts/package-alpha.py 读这个文件）与发布目录名同源；不纳入
+    // 本脚本时，bump 之后打出的包仍带旧版本，和 APP_VERSION 对不上。
+    file: join(root, "alpha-manifest.json"),
+    pattern: /"version": "[^"]+"/,
+    replacement: `"version": "${newVersion}"`,
+  },
+  {
+    file: join(root, "alpha-manifest.json"),
+    pattern: /"note": "Independent source tree for RikkaHub Desktop PLUS [^"]+/,
+    replacement: `"note": "Independent source tree for RikkaHub Desktop PLUS ${newVersion}`,
+  },
+  {
+    file: join(root, "alpha-manifest.json"),
+    pattern: /"releaseDirectory": "\.\.\/release-[^"]+"/,
+    replacement: `"releaseDirectory": "../release-${newVersion}"`,
+  },
+  {
+    file: join(root, "README.md"),
+    pattern: /badge\/version-[^"\s/]+-2f81f7/,
+    replacement: `badge/version-${newVersion}-2f81f7`,
+  },
+  {
+    file: join(root, "README.md"),
+    pattern: /^本目录版本为 [0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?。/m,
+    replacement: `本目录版本为 ${newVersion}。`,
+  },
+  {
+    file: join(root, "README.md"),
+    pattern: /^> \*\*[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)? (?:独立测试版|版本)\*\*/m,
+    replacement: `> **${newVersion} 版本**`,
+  },
+  {
+    file: join(root, "ALPHA.md"),
+    pattern: /^# RikkaHub Desktop PLUS [0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/m,
+    replacement: `# RikkaHub Desktop PLUS ${newVersion}`,
+  },
 ];
 
 for (const target of targets) {
@@ -73,11 +110,13 @@ const dockerTagFiles = ["docker-compose.yml", "docs/DOCKER.md", "README.md"];
 for (const rel of dockerTagFiles) {
   const file = join(root, rel);
   const content = readFileSync(file, "utf8");
-  const next = content.replace(/rikkahub-desktop-plus:[0-9][0-9A-Za-z.+-]*/g, `rikkahub-desktop-plus:${newVersion}`);
-  if (next === content) {
+  const imageTagPattern = /rikkahub-desktop-plus:[0-9][0-9A-Za-z.+-]*/g;
+  if (!imageTagPattern.test(content)) {
     console.error(`未找到镜像 tag: ${rel}`);
     process.exit(1);
   }
+  imageTagPattern.lastIndex = 0;
+  const next = content.replace(imageTagPattern, `rikkahub-desktop-plus:${newVersion}`);
   writeFileSync(file, next);
   console.log(`已更新: ${file}`);
 }

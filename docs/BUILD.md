@@ -13,11 +13,9 @@ publishing your own release feed.
 |---|---|---|
 | [Bun](https://bun.sh/) | **1.4.2**（与 CI/Dockerfile 钉死同版本） | 运行时、打包器、`--compile` 出单文件 exe |
 | [Git for Windows](https://gitforwindows.org/) | 任意近期版本 | 前端依赖 + 内嵌 bash 运行时的抽取源 |
+| Python 3 | 3.x | 运行 `scripts/package-alpha.py`（`--compact` 需 `py7zr`） |
 | Rust (rustup, MSVC target) | stable | 仅 Tauri 壳需要 |
 | Visual Studio Build Tools 2022 +「使用 C++ 的桌面开发」| — | MSVC `link.exe` 与 Windows SDK |
-| .NET Framework 4.8 + `csc.exe` | Windows 自带 | 仅 `desktop-shell` 原生壳需要（**不需要 Visual Studio**） |
-| Python + Pillow | 3.x | 仅重生成 `desktop-shell/icon.ico` |
-| `curl.exe` / `tar.exe` | Win10 1803+ 自带 | `desktop-shell/fetch-sdk.cmd` 拉 WebView2 SDK |
 
 依赖版本为什么要钉：Bun 的 `--compile` 产物行为与运行时版本强相关，CI、Dockerfile、
 本地三处不同版本会出现「本地能编、CI 红」。
@@ -54,16 +52,29 @@ bun run build              # 前端静态资源 → web-ui/build/client
 ./src-tauri/tauri-msvc.cmd build --bundles nsis
 ```
 
-`compile` 脚本末尾会把 `dist/rikkahub-pc.exe` 复制成
-`web-ui/src-tauri/binaries/rikkahub-server-x86_64-pc-windows-msvc.exe`（Tauri sidecar
-按 target triple 命名）。这个 117 MB 的 exe 是构建产物，已 gitignore。
+两个平台的单文件编译会把 `ssh2` 的可选 `cpu-features` / native crypto 扩展留在外部；
+`ssh2` 自带 JavaScript 回退实现，可以避免把与 Bun/Linux 运行时不兼容的 N-API 扩展编入
+发布程序。Windows 和 Linux 中验证的 SSH 工作区行为仍由同一套 `ssh2` 实现提供。
 
-两个 `*-msvc.cmd` 包装脚本绕开 Windows 上两个经典坑：
+`compile` 脚本末尾会把 `dist/rikkahub-pc.exe` 复制成
+`web-ui/src-tauri/binaries/rikkahub-pc-x86_64-pc-windows-msvc.exe`（Tauri sidecar
+按 target triple 命名；`tauri.conf.json` 的 `externalBin` 也用 `rikkahub-pc`，与便携版
+同名）。这个 100 MB 级的 exe 是构建产物，已 gitignore。
+
+两个 `*-msvc.cmd` 包装脚本绕开 Windows 上三个经典坑：
 
 1. Git Bash 的 PATH 里 `link.exe` 是 coreutils 的那个，会把 cargo 的链接器顶掉 →
-   包装脚本先 `vcvars64.bat`；
+   包装脚本先 `vcvars64.bat`（优先标准路径，找不到时用 vswhere 定位非默认安装盘）；
 2. 项目路径含非 ASCII 字符时部分 build script 会失败 → `CARGO_TARGET_DIR` 指到
-   ASCII 路径（脚本里默认 `C:\rikkahub-build`，可自行改）。
+   ASCII 路径（脚本里默认 `C:\rikkahub-build`，可自行改）；
+3. NSIS 打包要下载 `nsis-3.11.zip` 与 `nsis_tauri_utils.dll`。GitHub 不可直连时用
+   Tauri 自带的镜像变量（镜像请求不走系统代理）：
+
+   ```bash
+   export TAURI_BUNDLER_TOOLS_GITHUB_MIRROR_TEMPLATE='https://ghfast.top/https://github.com/<owner>/<repo>/releases/download/<version>/<asset>'
+   ```
+
+   镜像返回的文件仍会按 Tauri 内置的 SHA1 校验，不会跳过完整性检查。
 
 ### 内嵌 bash 运行时
 
@@ -81,45 +92,41 @@ gitignore，只有版本戳 `assets/bash-bundle.version.json` 入库，runtime �
 落地覆盖。Linux 上这一步会直接跳过（内嵌 bash 只给 Windows 用），CI 用一个 dummy
 空文件让 import 能解析。
 
-## 4. Windows：便携版 + 原生壳
+## 4. Windows：便携版（Tauri）
 
-```bash
-# 后端
-cd pc-server && bun run compile
-
-# 前端
-cd ../web-ui && bun install && bun run build
-
-# 原生壳
-cd ../desktop-shell
-fetch-sdk.cmd        # 拉 WebView2 SDK 的 3 个引用 dll 到 sdk\lib（约 0.9 MB）
-build.cmd            # csc.exe 单文件编译 → dist\RikkaHub.exe
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-alpha.ps1   # 后端 + 前端 + Tauri 壳 + NSIS
+python scripts/package-alpha.py --stage-only                       # 便携 stage（默认 Tauri 壳）
+python scripts/package-alpha.py --compact                          # 完整 zip + 7z（7z 需 py7zr）
 ```
 
-把目录拼成便携版（壳在同目录找 `rikkahub-pc.exe`，数据落 `<根>\pc-data\`）：
+便携 stage 的布局（`shell.ini` 存在即视为便携模式）：
 
 ```
 RikkaHub_portable/
-  RikkaHub.exe                                   <- desktop-shell\dist
-  rikkahub-pc.exe                                <- dist
-  web-ui/build/client/                            <- 前端产物
-  fonts/  icons/                                  <- 直接拷目录
-  Microsoft.Web.WebView2.Core.dll
-  Microsoft.Web.WebView2.WinForms.dll
-  WebView2Loader.dll                              <- 这三枚来自 desktop-shell\sdk\lib
-  pc-data/                                        <- 运行时自动生成，属于用户，勿入库
+  RikkaHub.exe                  <- Tauri 壳（mainBinaryName）
+  rikkahub-pc.exe               <- Bun 后端 sidecar
+  web-ui/build/client/           <- 前端产物（静态资源）
+  fonts/  icons/                 <- 内置字体与品牌图标
+  koffi/                         <- 油库里 TTS 原生件（打包了 SDK 时才有）
+  shell.ini                      <- dataDir=alpha-data / minimizeToTray=0
+  Demo.cmd  Demo-browser.cmd     <- 演示入口（demo-data，无需 API key）
+  alpha-data/ demo-data/         <- 运行时自动生成，属于用户，勿入库
 ```
 
-`desktop-shell/build.cmd` 用系统 `csc.exe` 编译，语言级别是 C# 5（`csc.exe` 只认到它），
-写 `Program.cs` 时别用插值字符串、`Math.Min` 与 ref out 参数组合这类较新语法。
+Tauri 壳只消费 `shell.ini` 的 `dataDir` 与 `minimizeToTray`；`port`/`serverPath`
+由自动端口与固定 sidecar 名取代。`Demo.cmd` 用环境变量覆盖数据目录与端口
+（`RIKKAHUB_PC_DATA_DIR=demo-data`、`PORT=17555`）。
 
 ## 5. Linux 二进制与 Docker
 
 ```bash
-cd web-ui && bun install && bun run build
-cd ../pc-server && bun run compile:linux       # → ../dist/rikkahub-pc
-./dist/rikkahub-pc                              # 打开 http://localhost:17455，数据在 ./pc-data/
+bash scripts/build-linux.sh                    # → ../release-<version>/Rikkahub_<version>_linux_x64.tar.gz
 ```
+
+在 Linux x86_64 上执行，使用 Bun 1.4.2；脚本与 CI 共用，同步构建前端、编译后端并打包
+字体、图标、许可和使用说明。仅发布 tar.gz，不生成 AppImage、deb 或 Linux Tauri 桌面壳。
+解压后的启动方式见 [LINUX.md](LINUX.md)。Windows 与 Linux 的 `node_modules` 必须分别安装。
 
 Linux 上按需安装的系统包：`espeak-ng`（系统 TTS）、`xclip`/`wl-clipboard`（剪贴板）、
 `unzip` + `zip`（备份恢复、ZIP 导入 Skill —— 缺 `zip` 导出会直接崩）。缺失项在启动日志里
@@ -147,8 +154,8 @@ cd pc-server && bun run version:bump 2.0.1
 ```
 
 一次同步 `pc-server/updates/index.ts` 的 `APP_VERSION`、`web-ui/src-tauri/tauri.conf.json`、
-`web-ui/src-tauri/Cargo.toml`、`web-ui/app/lib/app-version.ts` 四处。手改单处会被 CI 的
-`check-version-sync.ts` 拦成红灯。
+`web-ui/src-tauri/Cargo.toml`、`Cargo.lock`、`web-ui/app/lib/app-version.ts` 与
+`alpha-manifest.json`。手改单处会被 CI 的 `check-version-sync.ts` 拦成红灯。
 
 ## 7. 测试与已知噪音
 
@@ -194,7 +201,7 @@ Windows 上 `bun test` 有 3 个恒定失败，不是回归、不必 bisect：2 
 
 取证入口：`pc-data/logs/server.boot.pending.<pid>.log`（正常退出会自删）、同目录
 `shell.log`（壳会把后端 stdout 每行加 `[server]` 前缀与毫秒时间戳转写进去）、
-`desktop-shell/cdp-startup.js`。用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+`scripts/cdp-startup.js`。用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 =--remote-debugging-port=9333` 打开调试端口；测完请用应用内退出或
 `POST /api/app/shutdown` 收尾，别 `taskkill`（会在壳日志留 `server exited unexpectedly`，
 并可能触发「上次未正常退出」告警与崩溃存档）。
