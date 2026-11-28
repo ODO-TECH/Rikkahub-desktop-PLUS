@@ -8,15 +8,18 @@ import {
   SettingsFold,
   SettingsGroup,
   SettingsRows,
+  SettingsRow,
   SettingsStack,
   SettingsSwitchRow,
 } from "~/components/settings/shared";
 import { WorkspaceToolsSection } from "~/components/settings/extensions/workspace";
+import { Input } from "~/components/ui/input";
 import { AgentBotAuditSection } from "./agent-bot-audit";
 
 const defaults: AgentLoopSettings = {
   enabled: true,
   transportRetry: true,
+  transportRetryDelaySeconds: 1,
   maxReplans: 2,
   stallRepeatLimit: 3,
   sameErrorLimit: 3,
@@ -24,6 +27,59 @@ const defaults: AgentLoopSettings = {
   roundBudgetTokens: 0,
   schedulingEnabled: false,
 };
+function NumberField({
+  value,
+  min,
+  max,
+  disabled,
+  ariaLabel,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  disabled?: boolean;
+  ariaLabel: string;
+  onCommit: (value: number) => void;
+}) {
+  const [text, setText] = React.useState(String(value));
+  const [focused, setFocused] = React.useState(false);
+  React.useEffect(() => {
+    if (!focused) setText(String(value));
+  }, [value, focused]);
+  const commit = () => {
+    const parsed = Number(text);
+    if (!Number.isFinite(parsed)) {
+      setText(String(value));
+      return;
+    }
+    const next = Math.min(max, Math.max(min, Math.round(parsed)));
+    setText(String(next));
+    if (next !== value) onCommit(next);
+  };
+  return (
+    <Input
+      type="number"
+      inputMode="numeric"
+      min={min}
+      max={max}
+      value={text}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      className="w-24"
+      onFocus={() => setFocused(true)}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={() => {
+        setFocused(false);
+        commit();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
+  );
+}
+
 export function AgentBotSection({ settings, onSettings }: SettingsSectionProps) {
   const current = settings.agentLoop ?? defaults;
   const [audit, setAudit] = React.useState(false);
@@ -56,6 +112,20 @@ export function AgentBotSection({ settings, onSettings }: SettingsSectionProps) 
             description="仅在尚未输出内容时重试，最多两次。"
             checked={current.transportRetry}
             onCheckedChange={(v) => void patch({ transportRetry: v })}
+          />
+          <SettingsRow
+            label="重试等待间隔"
+            description="1–30 秒；第二次重试翻倍。服务端建议等待更久时优先等待，短值不会覆盖设置。"
+            control={
+              <NumberField
+                value={current.transportRetryDelaySeconds ?? 1}
+                min={1}
+                max={30}
+                disabled={!current.transportRetry}
+                ariaLabel="重试等待间隔（秒）"
+                onCommit={(value) => void patch({ transportRetryDelaySeconds: value })}
+              />
+            }
           />
           <SettingsSwitchRow
             label="验证计划完成"

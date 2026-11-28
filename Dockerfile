@@ -3,14 +3,14 @@
 #  — Stage 1: Build —
 # --platform=$BUILDPLATFORM ensures Bun runs natively (no QEMU emulation).
 # Cross-compilation to TARGETARCH is handled via Bun's --target flag below.
-FROM --platform=$BUILDPLATFORM docker.io/oven/bun:1.4.2 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/oven/bun:1.4.5 AS builder
 ARG TARGETARCH
 
-WORKDIR /build
+WORKDIR /build/web-ui
 
 # Install web-ui dependencies (cache layer)
 COPY web-ui/package.json web-ui/bun.lock ./
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Build web-ui SPA
 COPY web-ui/ ./
@@ -22,10 +22,9 @@ RUN cd node_modules/react-dom && cp server.node.js server.bun.js
 # tsc 用它做类型对齐,Rollup 经 vite-tsconfig-paths 也按它解析【值导入】(如
 # @server/tools/ask-user)。web-ui 必须与 pc-server 源码平铺为兄弟目录才能构建——
 # 此前 pc-server 只在下面才 COPY,vite 一遇到值导入就 Rollup failed to resolve。
-# node_modules 排除:web-ui 的 bun install 装在 /build/node_modules,绝不能被这次
-# COPY 覆盖成宿主目录里的 Windows 依赖(布局:/build/node_modules 在,COPY pc-server
-# 只会新增 pc-server/ 子目录)。
-COPY pc-server/ ../build/pc-server/
+# node_modules 排除:web-ui 的 bun install 装在 /build/web-ui/node_modules,绝不能被这次
+# COPY 覆盖成宿主目录里的 Windows 依赖；前后端始终保持同级目录。
+COPY pc-server/ /build/pc-server/
 RUN bun run build
 
 # The lightweight kernel and OAuth snapshot are local source; no pi checkout.
@@ -41,7 +40,7 @@ COPY vendor/ ./vendor/
 # final exe. After install the wasm is at /build/pc-server/node_modules/mupdf/dist/...
 WORKDIR /build/pc-server
 COPY pc-server/package.json pc-server/bun.lock ./
-RUN bun install
+RUN bun install --frozen-lockfile
 # 重构后 server.ts 依赖 pc-server 下数十个本地模块(收官审查 P0-3:只 COPY server.ts
 # 会让 bun build 解析 import 直接失败)。整目录复制;node_modules 由上面的 bun install
 # 在镜像内重建(.dockerignore 排除宿主 node_modules,避免 Windows 依赖覆盖 Linux 依赖)。
@@ -76,7 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /build/pc-server/rikkahub-pc ./
-COPY --from=builder /build/build/client/ ./web-ui/build/client/
+COPY --from=builder /build/web-ui/build/client/ ./web-ui/build/client/
 # 8-5:品牌图标与内置字体随镜像分发(Tauri 形态经 bundle resources 携带,Docker 需显式拷)
 COPY icons/ ./icons/
 COPY fonts/ ./fonts/

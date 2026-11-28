@@ -1,12 +1,38 @@
 {
-  "note": "Independent source tree for RikkaHub Desktop PLUS 0.2.1",
-  "version": "0.2.1",
+  "source": "D:\\Users Data\\Desktop\\rikkahub\\rikkahub-desktop-plus",
+  "alpha": "D:\\Users Data\\Desktop\\rikkahub\\rikkahub-alpha",
+  "backup": "D:\\Users Data\\Desktop\\rikkahub\\backups\\rdp-before-kernel-alpha-20261121-203948.zip",
+  "files": 7907,
+  "excluded": [
+    ".git",
+    ".react-router",
+    ".scratch",
+    ".superpowers",
+    "backups",
+    "build",
+    "dist",
+    "node_modules",
+    "pc-data",
+    "pi",
+    "target",
+    "webview2-data",
+    "yukkuri-sdk"
+  ],
+  "note": "Independent source tree for RikkaHub Desktop PLUS 0.2.2",
+  "version": "0.2.2",
   "kernel": "agent-kernel/src",
   "desktopAdapter": "pc-server/kernel-engine",
   "defaultExecutionMode": "agent",
   "piCheckoutRequired": false,
   "oauthSnapshot": "vendor/pi-auth",
-  "releaseDirectory": "../release-0.2.1",
+  "testReport": "alpha-evidence/alpha2/REPORT.md",
+  "releaseDirectory": "../release-0.2.2",
+  "additionalBackups": [
+    "../backups/alpha-retired-pi-20261122.zip",
+    "../backups/alpha-legacy-pi-build-20261122",
+    "../backups/alpha-legacy-experiments-20261122"
+  ],
   "conversationKind": "persistent agent/chat",
-  "executionMode": "persistent from the next turn until switched; default agent; immutable during a run; pure-chat conversations cannot switch"
+  "executionMode": "persistent from the next turn until switched; default agent; immutable during a run; pure-chat conversations cannot switch",
+  "finalSourceBackup": "../backups/RikkaHub-0.2.0-source-final.zip"
 }

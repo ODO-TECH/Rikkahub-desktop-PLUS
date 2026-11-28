@@ -33,6 +33,8 @@ export interface RuntimeOptions {
   maxActiveRuns?: number;
   maxRetries?: number;
   retryDelayMs?: number;
+  /** Host retry policy; failedAttempt starts at 1. null stops retries. */
+  retryDelayFor?: (failedAttempt: number, error: unknown) => number | null;
   /** Must include tool declarations and protocol overhead. Fallback is an estimate. */
   countTokens?: (messages: readonly Message[], tools: readonly ToolDeclaration[]) => number;
   onEvent?: (event: KernelEvent) => void;
@@ -191,6 +193,7 @@ export class AgentRuntime {
     }
     return recovered;
   }
+  /** Explicit host resolution API; desktop production currently creates a fresh run per turn and does not call this. */
   resolveInterrupted(id: string, callId: string, output: ToolOutput): void {
     if (this.active.has(id)) throw new Error("Run is active");
     const run = this.store.run(id);
@@ -318,7 +321,11 @@ export class AgentRuntime {
         lastError = error;
         if (signal.aborted || observed || !(error instanceof ProviderError) || !error.retryable || attempt === (this.options.maxRetries ?? 2)) throw error;
       } finally { release(); }
-      const delay = (this.options.retryDelayMs ?? 250) * 2 ** attempt;
+      const delay = this.options.retryDelayFor
+        ? this.options.retryDelayFor(attempt + 1, lastError)
+        : (this.options.retryDelayMs ?? 250) * 2 ** attempt;
+      if (delay === null) throw lastError;
+      if (!Number.isFinite(delay) || delay < 0) throw new Error("Invalid retry policy delay");
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, delay);
         const abort = () => { clearTimeout(timer); reject(signal.reason); };

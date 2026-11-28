@@ -10,8 +10,14 @@ import { join } from "node:path";
 const testDataDir = mkdtempSync(join(tmpdir(), "rkh-embed-test-"));
 process.env.RIKKAHUB_PC_DATA_DIR = testDataDir;
 
-const mod = await import("./embedded-bash");
-const { ensureEmbeddedBash, embeddedBashAvailableSync, _resetEmbeddedBashForTest } = mod;
+// Skip the Windows-only module import as well as its tests. Its static file
+// import requires the Windows bundle, which Linux/Docker builds omit.
+let ensureEmbeddedBash: typeof import("./embedded-bash").ensureEmbeddedBash;
+let embeddedBashAvailableSync: typeof import("./embedded-bash").embeddedBashAvailableSync;
+let _resetEmbeddedBashForTest: typeof import("./embedded-bash")._resetEmbeddedBashForTest;
+if (process.platform === "win32") {
+  ({ ensureEmbeddedBash, embeddedBashAvailableSync, _resetEmbeddedBashForTest } = await import("./embedded-bash"));
+}
 const { embeddedBashDir, embeddedBashExe, embeddedBashStampPath } = await import("../../foundation/paths");
 
 afterAll(() => {

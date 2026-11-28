@@ -47,8 +47,8 @@ export async function bootstrap(): Promise<void> {
   startAlphaDemo();
   state.launchCount += 1;
 
-  // 2) 代理拦截器:必须在首次出站 fetch 之前安装,否则首个请求会触发 Bun 的 env 快照
-  //    锁定,之后改代理不生效。就绪前 /api 全部 503,不会有业务出站请求先行。
+  // 2) 代理拦截器:在业务出站 fetch 前清理桌面继承 env，并装配应用的逐请求代理决策。
+  //    Bun 1.4.5 按当前 env 处理代理；容器保留部署 env。就绪前 /api 全部 503。
   installProxyFetchInterceptor(() => state.settings.proxyConfig);
   // 2b) 工作区 LLM 日志壳(日志问题 1):包在代理拦截器外层(后安装者先执行),pi SDK 内部的
   //     LLM fetch 经 AsyncLocalStorage 上下文记入统一日志管线,与聊天引擎同一套 addLog。

@@ -7,8 +7,8 @@ if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
   printf 'Run this script on Linux x86_64.\n' >&2
   exit 1
 fi
-if [[ "$(bun --version)" != 1.4.2 ]]; then
-  printf 'Bun 1.4.2 is required, matching the Windows and Docker build.\n' >&2
+if [[ "$(bun --version)" != 1.4.5 ]]; then
+  printf 'Bun 1.4.5 is required, matching the Windows and Docker build.\n' >&2
   exit 1
 fi
 

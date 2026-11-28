@@ -1,3 +1,4 @@
+import { spawnTracked } from "./child-registry";
 // foundation/tls-trust.ts — 证书校验失败时用 Windows 证书库兜底
 //
 // 为什么需要:Bun 的 TLS 只认内置根证书,不读 Windows 根存储。桌面用户装了 HTTPS
@@ -57,9 +58,9 @@ async function exportWindowsRootStore(): Promise<string | null> {
     `[IO.File]::WriteAllText('${target}',$sb.ToString())`,
   ].join("; ");
   try {
-    const proc = Bun.spawn(
+    const proc = spawnTracked(
       ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-      { stdout: "ignore", stderr: "ignore" },
+      { purpose: "system-root-certificates", stdout: "ignore", stderr: "ignore" },
     );
     if ((await proc.exited) !== 0) return null;
   } catch {

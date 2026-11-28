@@ -24,6 +24,7 @@ import { prepareDynamicRecall } from "../memory/dynamic-recall";
 import { prepareMoodInjection } from "../mood/injection";
 import { DesktopProvider, fromApi } from "./provider";
 import { desktopKernelLimits } from "./limits";
+import { desktopTransportRetryOptions } from "./transport-retry";
 
 let store: KernelStore | undefined;
 let recovered=false;
@@ -164,7 +165,7 @@ export async function runKernelGeneration(ctx: EngineRunContext, sink: Generatio
       if(decision?.action === "halt") throw new Error(decision.reason);
       return decision?.action === "inject" ? [decision.text] : [];
     },
-    maxRetries:state.settings.agentLoop?.transportRetry === false ? 0 : 2,
+    ...desktopTransportRetryOptions(state.settings.agentLoop),
     onEvent(event) {
       if(event.type === "delta") {
         if(event.runId === rootId) sink({kind:event.kind === "text"?"text_delta":"reasoning_delta",text:event.text});

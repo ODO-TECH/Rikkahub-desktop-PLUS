@@ -1,3 +1,4 @@
+import { spawnTracked } from "../foundation/child-registry";
 // tools/platform.ts — 本地工具调用的平台能力（剪贴板、系统 TTS）
 // 纪律：只封装 OS 命令调用，不依赖业务状态。
 
@@ -7,7 +8,7 @@ import { join } from "node:path";
 import { tempDir } from "../foundation/platform";
 
 export async function runPowerShell(command: string, input = "") {
-  const proc = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command], {
+  const proc = spawnTracked(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command], { purpose: "platform-command",
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -60,12 +61,12 @@ export async function writeSystemClipboardText(text: string) {
   const backend = clipboardCommand();
   try {
     if (backend === "wl") {
-      const proc = Bun.spawn(["wl-copy"], { stdin: "pipe" });
+      const proc = spawnTracked(["wl-copy"], { purpose: "platform-command", stdin: "pipe" });
       proc.stdin.write(text);
       proc.stdin.end();
       await proc.exited;
     } else if (backend === "x11") {
-      const proc = Bun.spawn(["xclip", "-selection", "clipboard"], { stdin: "pipe" });
+      const proc = spawnTracked(["xclip", "-selection", "clipboard"], { purpose: "platform-command", stdin: "pipe" });
       proc.stdin.write(text);
       proc.stdin.end();
       await proc.exited;
@@ -98,7 +99,7 @@ export async function speakSystemText(text: string, speechRate = 1) {
         "$s.Speak([Console]::In.ReadToEnd())",
         "$s.Dispose()",
       ].join("; ");
-      const proc = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], {
+      const proc = spawnTracked(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], { purpose: "platform-command",
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
@@ -117,7 +118,7 @@ export async function speakSystemText(text: string, speechRate = 1) {
       }
     } else {
       const speed = Math.max(80, Math.min(450, Math.round(175 * speechRate)));
-      const proc = Bun.spawn(["espeak-ng", "--stdin", "-s", String(speed)], {
+      const proc = spawnTracked(["espeak-ng", "--stdin", "-s", String(speed)], { purpose: "platform-command",
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
@@ -157,7 +158,7 @@ export async function synthesizeSystemTtsToWav(text: string, speechRate = 1): Pr
         "$s.Speak([Console]::In.ReadToEnd())",
         "$s.Dispose()",
       ].join("; ");
-      const proc = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], {
+      const proc = spawnTracked(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], { purpose: "platform-command",
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
@@ -176,7 +177,7 @@ export async function synthesizeSystemTtsToWav(text: string, speechRate = 1): Pr
       }
     } else {
       const speed = Math.max(80, Math.min(450, Math.round(175 * speechRate)));
-      const proc = Bun.spawn(["espeak-ng", "-w", tmpWav, "-s", String(speed), "--stdin"], {
+      const proc = spawnTracked(["espeak-ng", "-w", tmpWav, "-s", String(speed), "--stdin"], { purpose: "platform-command",
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",

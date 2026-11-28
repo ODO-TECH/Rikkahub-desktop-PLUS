@@ -1,3 +1,4 @@
+import { spawnTracked } from "./child-registry";
 // foundation/net.ts — 代理与网络工具
 // 纪律：纯函数，不直接读取 state；调用方通过参数传入 ProxyConfig。
 
@@ -65,7 +66,7 @@ export function parseProxyServerValue(value: string): string | undefined {
 // 事件循环数十 ms"的病灶。运行期唯一热路径入口是缓存读(readSystemProxy);这两个函数
 // 只被启动预热、后台刷新和 settings/proxy/detect 端点调用。
 async function runCommandText(cmd: string[]): Promise<{ exitCode: number; stdout: string }> {
-  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore" });
+  const proc = spawnTracked(cmd, { purpose: "system-proxy-probe", stdout: "pipe", stderr: "ignore" });
   const stdout = await new Response(proc.stdout).text();
   const exitCode = await proc.exited;
   return { exitCode, stdout };
@@ -179,6 +180,7 @@ export async function detectSystemPacUrl(): Promise<string | undefined> {
 }
 
 export async function detectSystemProxy(): Promise<string | undefined> {
+  systemProxyDetectCalls += 1;
   if (RUNTIME_PLATFORM === "win") return readWindowsSystemProxy();
   if (RUNTIME_PLATFORM === "linux" && !RUNNING_IN_CONTAINER) return readGnomeProxy();
   return undefined;
@@ -187,6 +189,14 @@ export async function detectSystemProxy(): Promise<string | undefined> {
 let systemProxyCache: { value: string | undefined; ts: number } | null = null;
 export const SYSTEM_PROXY_TTL_MS = 2000;
 let systemProxyRefreshInFlight = false;
+// S2 守卫：探测调用次数只用于测试/诊断。契约是「请求路径零探测」——per-request 只读缓存，
+// 探测只发生在启动预热与 TTL 过期后的后台单飞刷新（见 readSystemProxy）。
+let systemProxyDetectCalls = 0;
+
+/** 诊断信息：探测次数与缓存年龄。不含代理地址本身（可能带凭据）。 */
+export function systemProxyDiagnostics(): { detectCalls: number; cacheAgeMs: number | null } {
+  return { detectCalls: systemProxyDetectCalls, cacheAgeMs: systemProxyCache ? Date.now() - systemProxyCache.ts : null };
+}
 
 function scheduleSystemProxyRefresh(): void {
   if (systemProxyRefreshInFlight) return;
@@ -241,7 +251,9 @@ export function resolveEffectiveProxy(cfg: ProxyConfig): { url: string | undefin
 
   if (mode === "env") {
     // 完全由 env 控制（Docker）：读当前 env 值用于展示，不由我们写入（applyEffectiveProxy 也是 no-op）
-    const envUrl = process.env.HTTPS_PROXY?.trim() || process.env.HTTP_PROXY?.trim();
+    const envUrl = process.env.HTTPS_PROXY?.trim() || process.env.https_proxy?.trim()
+      || process.env.HTTP_PROXY?.trim() || process.env.http_proxy?.trim()
+      || process.env.ALL_PROXY?.trim() || process.env.all_proxy?.trim();
     return { url: envUrl || undefined, source: envUrl ? "env" : "none" };
   }
 
@@ -343,11 +355,10 @@ export function ipInCidr(ip: string, cidr: string): boolean {
   return ((ipInt & mask) >>> 0) === ((netInt & mask) >>> 0);
 }
 
-// Bun fetch 在进程首次网络请求时快照 HTTPS_PROXY/HTTP_PROXY/NO_PROXY env 并永久锁定
-// （实测 Bun 1.3.13；1.4.0 经 scripts/proxy-behavior-smoke.ts 复核锁仍在、direct/manual 分流
-// 与错误分类正则均未漂移）。本函数在 server 启动早期（首次 fetch 前）安装拦截：
-//   - 非容器部署：清空 env 防 Bun 锁定旧代理
-//   - 容器部署（mode=env）：保留 docker 注入的 HTTPS_PROXY，让 Bun 快照它
+// Bun 1.4.5 fetch 读取当前代理 env，运行时写入/删除立即生效，ALL_PROXY 也会兜底。
+// scripts/proxy-behavior-smoke.ts 使用本地代理验证该语义。启动早期安装拦截：
+//   - 非容器部署：清空全部继承代理 env，由应用配置决定每次请求的代理
+//   - 容器部署（mode=env）：保留部署注入的 env，让 Bun 按当前值处理
 //   - 替换 globalThis.fetch，per-request 按当前代理状态显式传 proxy 选项
 export function installProxyFetchInterceptor(getProxyConfig: () => ProxyConfig): void {
   if (!RUNNING_IN_CONTAINER) {
@@ -357,6 +368,8 @@ export function installProxyFetchInterceptor(getProxyConfig: () => ProxyConfig):
     delete process.env.http_proxy;
     delete process.env.NO_PROXY;
     delete process.env.no_proxy;
+    delete process.env.ALL_PROXY;
+    delete process.env.all_proxy;
   }
   const originalFetch = globalThis.fetch;
   globalThis.fetch = function (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) {
@@ -366,12 +379,11 @@ export function installProxyFetchInterceptor(getProxyConfig: () => ProxyConfig):
       return originalFetch(input, init);
     }
 
-    // ── 统一禁用 Bun 300s socket 空闲定时器(所有引擎的 LLM fetch 自动继承)─────────
-    // Bun fetch 每个 socket 默认带 BUN_CONFIG_HTTP_IDLE_TIMEOUT=300s 空闲定时器,触发即
-    // TimeoutError。思考型模型闷头想 >300s 且零字节(等响应头、无 keepalive)会被它抢先
-    // 杀掉,我们应用层看门狗(600s headerTimeoutMs / 120s STREAM_IDLE / AbortSignal.timeout)
-    // 来不及救——经 scripts/fetch-idle-timeout-smoke.ts 本地决定性实验实锤(裸 fetch 在
-    // 300032ms 被杀、timeout:0 撑过 305s)。
+    // ── 保留显式禁用 socket 空闲超时(所有引擎的 LLM fetch 自动继承)──────────────
+    // 旧版本地实验曾记录裸 fetch 在约 300s 被 TimeoutError 终止、timeout:0 撑过 305s。
+    // 2026-11-28 Bun 1.4.5 复测：两组均撑过 305005ms，本轮未复现默认 300s 中断。
+    // 保留 timeout:0 的既有策略，应用层仍由 header/stream 看门狗与 AbortSignal 计时；
+    // 这次结果不推断所有连接阶段、环境与更长静默都没有运行时超时。
     //
     // 为什么敢在拦截器一刀切而非逐引擎加:我们应用层对每条 fetch 都有自己的计时(signal /
     // AbortSignal.timeout / fetchWithTimeout),Bun 的空闲定时器对我们永远多余,禁掉它只是
@@ -422,7 +434,7 @@ export function installProxyFetchInterceptor(getProxyConfig: () => ProxyConfig):
     const cfg = getProxyConfig();
     const mode = cfg?.mode ?? "auto";
     let proxy: string | undefined;
-    // env 模式（Docker）：不注入，让 Bun 用启动时快照的 docker env。
+    // env 模式（Docker）：不注入，让 Bun 使用当前部署环境变量。
     // direct：强制直连。其余（auto/manual）：按当前 resolveEffectiveProxy + bypass 决定。
     if (mode !== "env" && mode !== "direct") {
       const { url } = resolveEffectiveProxy(cfg);

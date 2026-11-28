@@ -6,7 +6,6 @@ import { Database } from "bun:sqlite";
 
 import {
   clearAllFts,
-  deleteConversationFts,
   ensureMessageFtsTable,
   ftsRowCount,
   rebuildFtsFromNodeTable,
@@ -90,16 +89,18 @@ describe("replaceNodeFts / searchMessageFts", () => {
   });
 });
 
-describe("deleteConversationFts / clearAllFts", () => {
-  test("按会话删除只清该会话的行", () => {
+describe("clearAllFts", () => {
+  test("清空后可以继续写；清空走删表重建，行号目录一起归零", () => {
     const db = freshDb();
     replaceNodeFts(db, "c1", node("n1", ["alpha text"]));
     replaceNodeFts(db, "c2", node("n2", ["beta text"]));
-    deleteConversationFts(db, ["c1"]);
-    expect(searchMessageFts(db, "alpha")).toHaveLength(0);
-    expect(searchMessageFts(db, "beta")).toHaveLength(1);
+    expect(ftsRowCount(db)).toBe(2);
     clearAllFts(db);
     expect(ftsRowCount(db)).toBe(0);
+    const dirRows = (db.prepare("SELECT COUNT(*) AS n FROM pc_message_fts_dir").get() as { n: number }).n;
+    expect(dirRows).toBe(0);
+    replaceNodeFts(db, "c1", node("n1", ["after clear"]));
+    expect(searchMessageFts(db, "after clear")).toHaveLength(1);
   });
 });
 

@@ -16,7 +16,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.5'
 
       - name: Install pc-server dependencies
         working-directory: pc-server
@@ -60,7 +60,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.5'
 
       # web-ui 测试经 @server 别名 import pc-server 模块(speech-catalog 契约锁拉
       # media/tts → model-providers → message-builder → files/index,后者顶层

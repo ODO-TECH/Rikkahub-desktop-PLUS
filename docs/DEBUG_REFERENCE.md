@@ -21,7 +21,7 @@
       ↓
 消息队列 → generateAnswer
       ↓
-记忆召回 → 自动/手动压缩 → Chat 或 pi 引擎
+记忆召回 → 自动/手动压缩 → Chat 或 agent 内核
                               ↓
                     工作区工具 / SSH / 子代理
                               ↓
@@ -34,8 +34,8 @@
 高风险耦合点：
 
 - IM 与桌面/语音共用会话、生成和消息队列。
-- Chat 与 pi 共用记忆召回，但压缩实现和完成路径不同。
-- 工作区运行时可指向本地或 SSH；pi 资源目录仍是本机路径。
+- Chat 与 agent 共用记忆召回，但压缩实现和完成路径不同。
+- 工作区运行时可指向本地或 SSH；引擎资源目录仍是本机路径。
 - 备份导入替换权威数据，旧异步任务不得再写入新状态。
 - 桌面壳主要通过 HTTP `/api/app/shutdown` 关闭后端，不是信号退出路径。
 
@@ -116,7 +116,7 @@
 
 必须同时保持反向契约：导出安卓包仍剥离 SSH/IM 凭据；PC → PC 完整备份保留这些字段。
 
-### P1-1：导入与 pi 手动压缩竞态
+### P1-1：导入与手动压缩竞态（pi 时代记录，pi 已退役）
 
 证据：
 
@@ -158,7 +158,7 @@
 
 - `pc-server/conversations/orchestrator.ts:860-875`：父生成注入远程工作区提示。
 - `pc-server/conversations/orchestrator.ts:896-909`：子代理只接收本地 `engineCwd` 等参数。
-- `pc-server/pi-engine/subagent-tools.ts:210-230`：子代理资源只追加通用子代理提示。
+- 原 `pc-server/pi-engine/subagent-tools.ts:210-230`（pi 已退役；现实现见 `agent-kernel/src/superagent.ts` 与 `pc-server/kernel-engine/driver.ts`）：子代理资源只追加通用子代理提示。
 
 准确症状：SSH 工作区中的子代理可能按本机 shell/路径理解任务。
 
@@ -280,7 +280,7 @@ conversationId + assistantId + embeddingModelKey + invalidationGeneration
 
 ### D6：SSH 子代理上下文
 
-扩展 `pc-server/pi-engine/subagent-tools.test.ts`：
+扩展子代理上下文测试（pi 已退役；原 pi 版为 `pc-server/pi-engine/subagent-tools.test.ts`，现对应 `agent-kernel/test/superagent.test.ts` 与 `kernel-engine` 侧接线）：
 
 - 子代理收到远程 shell、发行版、路径和“非沙盒”说明。
 - 本地工作区不注入远程说明。

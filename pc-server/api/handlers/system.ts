@@ -112,6 +112,7 @@ export async function handleSystemRoutes(request: Request, url: URL, path: strin
         : process.platform === "darwin"
           ? ["open", file]
           : ["xdg-open", file];
+    // 独立桌面应用（浏览器/关联程序）由用户管理，不能随后端关停而清理。
     Bun.spawn(opener, { stdout: "ignore", stderr: "ignore" });
     return json({ ok: true });
   }
@@ -156,6 +157,7 @@ export async function handleSystemRoutes(request: Request, url: URL, path: strin
         : process.platform === "darwin"
           ? ["open", "-R", target]
           : ["xdg-open", exportsDir];
+    // 文件管理器是用户桌面应用，豁免服务子进程登记与关停清理。
     Bun.spawn(opener, { stdout: "ignore", stderr: "ignore" });
     return json({ ok: true });
   }

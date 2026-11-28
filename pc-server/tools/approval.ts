@@ -205,6 +205,9 @@ export function isMcpToolApprovalRequiredForAssistant(
 // PC scope: `ask_user` is always pending (it's literally a "ask the user" prompt), and any
 // MCP tool whose effective needsApproval (override-resolved) is true gets pending too. Local
 // built-ins (search/scrape/memory/etc.) currently never need approval — Android matches.
+// S6 核查（2026-11-28）：MCP 已由 hostCapabilities(true) 暴露给 Agent/工作区，
+// 下方仍按逐工具 needsApproval 判定，并不按工作区档位覆盖。docs/dev-workflow.md §7
+// 与 docs/plan-agent-lite.md S6 的“只看档位”是待实现提案，本次只澄清现状，不改审批行为。
 export function toolNeedsApproval(
   toolName: string,
   assistant: Assistant,

@@ -1,4 +1,4 @@
-# RikkaHub Desktop PLUS 0.2.1
+# RikkaHub Desktop PLUS 0.2.2
 
 本目录是独立 Alpha 源码，原 `rikkahub-desktop-plus/` 未作为修改目标。重构前的源码（包括原有未提交修改）和退役的 pi 集成均另有 ZIP 备份。Alpha 使用独立数据目录，不要求迁移原有个人数据。
 
@@ -23,6 +23,10 @@
 工具调用与 subagent 的实时输出、思考、工具进度集中在右侧「运行详情」，分为「工具调用」和「子任务」两个标签。主 Agent 可通过原生 `app_control` 管理设置、安装并启用 Skill、配置 MCP，能力在下一次模型请求前刷新。
 
 Agent 设置从实验区移出，精简为完成验证、网络重试、可选定时调度与折叠的审计入口。已有 IM / AgentBot 入口沿用同一生成通道。
+
+网络重试等待间隔可在 Agent 设置中调整为 1–30 秒，第二次重试翻倍。桌面 kernel 默认从原先的 250ms/500ms 改为 1s/2s；短 `Retry-After` 不会压低设置值，服务端建议等待最多按 30 秒计，超过 60 秒直接失败。配额、欠费类 429 不重试。
+
+Mermaid 预览随前端打包本地脚本，聊天代码块、工作台和文件预览均可在无外网时渲染。本地资源缺失才回退 CDN。实现移植自 PR #2，感谢 GoldenswordYJF。
 
 ## 内核与轻量化
 
@@ -52,7 +56,7 @@ Superagent 是小型任务图协调器：最多 6 项任务、2 个 worker，依
 
 ## 构建与检查
 
-Windows 推荐 Bun 1.4.2；在此目录执行 `powershell -ExecutionPolicy Bypass -File scripts/build-alpha.ps1`。源码包包含锁文件、内核、选段 OAuth 源码和现有 bash bundle。重建 bash bundle 时需要 Git for Windows。不需要克隆 pi 或 DSH。
+Windows 推荐 Bun 1.4.5；在此目录执行 `powershell -ExecutionPolicy Bypass -File scripts/build-alpha.ps1`。源码包包含锁文件、内核、选段 OAuth 源码和现有 bash bundle。重建 bash bundle 时需要 Git for Windows。不需要克隆 pi 或 DSH。
 
 分别验证：
 
@@ -90,3 +94,9 @@ OpenAI 兼容文本/工具流已用于端到端检查；Claude 签名思考与 G
 ## 0.2.1 前端与平台构建验收
 
 前端类型检查通过，591 项单元测试全部通过，生产构建成功。Windows Tauri 前端继续使用同一份 React Router SPA。Linux x64 tar.gz 和 Docker 镜像由 Debian 13 / WSL 2 构建，并各自完成运行检查；Linux 发布物仅为 tar.gz。
+
+## 0.2.2 修复与构建验收
+
+429 限流重试等待间隔接入桌面 kernel（1–30 秒，取设置值与 `Retry-After` 的较长值，配额/计费类 429 不重试）；Mermaid 预览改为同源加载，离线可用。两项修复移植自社区 PR #2。
+
+Windows（Bun 1.4.5）：前端 594 项单测、后端相关回归 859 项、内核 44 项通过；便携包、NSIS 安装包与源码包构建成功，便携版启动健康检查 200。Linux x64 tar.gz 与 Docker amd64 镜像由 Debian 13 / WSL 2 构建，解压启动与容器健康检查均通过。安装包未在本机实际安装。

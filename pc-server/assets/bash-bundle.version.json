@@ -1,8 +1,8 @@
 {
-  "bundleVersion": "msys2-1791215336000",
-  "msys2MtimeMs": 1791215336000,
+  "bundleVersion": "msys2-1763403761364.2156",
+  "msys2MtimeMs": 1763403761364.2156,
   "fileCount": 67,
-  "sha256": "50655a3d0abc217dd1f1d3edc98c1236c8e4451b280b6df04a55123d4cee8160",
+  "sha256": "c234977ae1b0c640f0bca71a194fb67c3b4cbf5c480c01059bca11b3bd67b61a",
   "tools": [
     "bash.exe",
     "sh.exe",
@@ -74,5 +74,5 @@
     "msys-pcre-1.dll",
     "msys-readline8.dll"
   ],
-  "builtAt": "2026-11-24T04:55:59.843Z"
+  "builtAt": "2026-11-27T10:52:33.306Z"
 }

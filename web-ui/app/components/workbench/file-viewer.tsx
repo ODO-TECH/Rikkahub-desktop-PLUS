@@ -2,7 +2,8 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Download, ExternalLink, FileWarning, Loader2, PencilLine, RefreshCw, Save, X } from "lucide-react";
 
-import { buildMermaidPreviewDocument, HighlightedCode } from "~/components/markdown/code-block";
+import { HighlightedCode } from "~/components/markdown/code-block";
+import { buildMermaidPreviewDocument } from "~/components/markdown/mermaid-preview";
 import { languageForPath } from "~/components/markdown/code-language";
 import Markdown from "~/components/markdown/markdown";
 import { Button } from "~/components/ui/button";
@@ -284,7 +285,7 @@ export function FileViewer({
                 className="h-full min-h-[320px] w-full border-0 bg-white"
               />
             ) : isMermaid && !sourceMode ? (
-              // 与对话代码块同一渲染路径:iframe 内从 esm.sh 动态加载 mermaid 渲染,
+              // 与对话代码块同一渲染路径:iframe 内优先从同源加载 mermaid，本地缺失才回退 CDN,
               // allow-scripts 是 mermaid 运行的最低要求;文档本身无应用同源权限。
               <iframe
                 title={file.title}

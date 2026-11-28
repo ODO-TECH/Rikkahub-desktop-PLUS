@@ -1,7 +1,7 @@
 import type { Message, ModelEvent, ModelProvider, ModelRequest, ToolCall, Usage } from "./types.ts";
 
 export class ProviderError extends Error {
-  constructor(message: string, readonly retryable = false) { super(message); }
+  constructor(message: string, readonly retryable = false, readonly retryAfterMs: number | null = null) { super(message); }
 }
 export interface OpenAIOptions {
   /** Full endpoint, e.g. https://api.deepseek.com/chat/completions. */

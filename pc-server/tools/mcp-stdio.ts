@@ -1,3 +1,4 @@
+import { spawnTracked } from "../foundation/child-registry";
 // tools/mcp-stdio.ts — MCP 本地 stdio 传输
 //
 // 协议：每行一条 JSON-RPC 消息（MCP stdio transport），stdout 只承载协议消息，
@@ -262,8 +263,10 @@ function createRuntime(server: Record<string, JsonValue>): StdioRuntime {
   const cwd = String(server.cwd ?? "").trim();
   let processHandle: Bun.PipedSubprocess;
   try {
-    processHandle = Bun.spawn({
-      cmd: [command, ...args],
+    processHandle = spawnTracked([command, ...args], {
+      purpose: "mcp-stdio",
+      // POSIX 以独立进程组运行，关停时可连带 MCP 启动器的后代。
+      detached: process.platform !== "win32",
       cwd: cwd || undefined,
       env: envRecord(server),
       stdin: "pipe",

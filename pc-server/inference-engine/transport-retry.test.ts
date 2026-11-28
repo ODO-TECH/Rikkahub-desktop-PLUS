@@ -43,11 +43,34 @@ describe("transportRetryDelayMs", () => {
     expect(transportRetryDelayMs(2, null)).toBe(TRANSPORT_RETRY_BASE_DELAY_MS * 2);
   });
 
-  test("有 Retry-After:优先服务端值并封顶 30s;超过 60s 放弃", () => {
+  test("自定义退避基数:按设置值翻倍,缺省参数保持旧序列", () => {
+    expect(transportRetryDelayMs(1, null, 5000)).toBe(5000);
+    expect(transportRetryDelayMs(2, null, 5000)).toBe(10000);
+    expect(transportRetryDelayMs(3, null, 5000)).toBe(20000);
+    expect(transportRetryDelayMs(1, null, undefined)).toBe(TRANSPORT_RETRY_BASE_DELAY_MS);
+  });
+
+  test("退避基数非正数/NaN 回落默认(不把请求打成零等待)", () => {
+    expect(transportRetryDelayMs(1, null, 0)).toBe(TRANSPORT_RETRY_BASE_DELAY_MS);
+    expect(transportRetryDelayMs(1, null, -3000)).toBe(TRANSPORT_RETRY_BASE_DELAY_MS);
+    expect(transportRetryDelayMs(1, null, Number.NaN)).toBe(TRANSPORT_RETRY_BASE_DELAY_MS);
+  });
+
+  test("有 Retry-After:服务端值封顶 30s;超过 60s 放弃", () => {
     expect(transportRetryDelayMs(1, 1500)).toBe(1500);
     expect(transportRetryDelayMs(1, RETRY_AFTER_CAP_MS + 5000)).toBe(RETRY_AFTER_CAP_MS);
     expect(transportRetryDelayMs(1, RETRY_AFTER_FAIL_MS + 1)).toBeNull();
     expect(transportRetryDelayMs(1, RETRY_AFTER_FAIL_MS)).toBe(RETRY_AFTER_CAP_MS);
+    expect(transportRetryDelayMs(1, 45_000, 5000)).toBe(RETRY_AFTER_CAP_MS);
+  });
+
+  test("设置值是下限:绝不比服务端更早发,也不被它的小值打回默认", () => {
+    // 供应商回 retry-after: 1 却要求等降温——旧实现在这里让设置形同无效。
+    expect(transportRetryDelayMs(1, 1500, 30_000)).toBe(30_000);
+    expect(transportRetryDelayMs(1, 0, 30_000)).toBe(30_000);
+    expect(transportRetryDelayMs(2, 1000, 30_000)).toBe(60_000);
+    // 缺省基数下同样不再零等待:退避 1s 是底线。
+    expect(transportRetryDelayMs(1, 0)).toBe(TRANSPORT_RETRY_BASE_DELAY_MS);
   });
 });
 

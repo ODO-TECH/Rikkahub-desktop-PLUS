@@ -1,3 +1,4 @@
+import { assertChildSpawningAllowed, trackNodeChild } from "../../foundation/child-registry";
 // Adapted from pi (https://github.com/badlogic/pi-mono), MIT © Mario Zechner
 // 来源:packages/coding-agent/src/core/tools/bash.ts(v0.85.1)。schema/description/execute
 // 逐字保留(timeout 语义、OutputAccumulator 有界累积、100ms onUpdate 节流、截断落盘
@@ -94,6 +95,7 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
       }
 
       const commandFromStdin = shellConfig.commandTransport === "stdin";
+      assertChildSpawningAllowed();
       const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
         cwd,
         detached: process.platform !== "win32",
@@ -101,6 +103,7 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
         stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
         windowsHide: true,
       });
+      trackNodeChild(child, shellConfig.shell, "workspace-bash", process.platform !== "win32");
       if (commandFromStdin) {
         child.stdin?.on("error", () => {});
         child.stdin?.end(command);

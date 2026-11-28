@@ -1,5 +1,8 @@
 # 自主循环（goal → plan → act → observe → replan）方案与流程规范
 
+> 2026-11-28：桌面 kernel 已接入 `transportRetryDelaySeconds`（1–30 秒）。默认等待从 250ms/500ms 改为 1s/2s，第二次重试翻倍；较短的 `Retry-After` 不会压低设置值，服务端值最多按 30 秒计，超过 60 秒直接失败，配额/欠费错误不重试。PR #2 原始实现：GoldenswordYJF。
+
+
 > 状态：S1 已落地（run 状态机 / 运行记录 / engine_status 扩展 / 折叠面板 / 实验设置页），S2 已落地（计划 v2 / 目标三件套改写保护 / attempts / 未验证标识 / 权威快照），S3 已落地（确定性判定表 / replan 注入 / 完成校验 / stalled·awaiting_user·exhausted 终局 / 继续·改目标入口），S4 已落地（骨架层零输出窗口传输重试 / Retry-After / 状态条重试相位 / 独立开关），S5 已落地（真实控制器 + 真实骨架 + 脚本化 adapter 的 mock 验收、Windows 基线说明）。
 > 进度：S1 ✅ · S2 ✅ · S3 ✅ · S4 ✅ · S5 ✅。
 > 范围：只补「自主循环」这一项。任务生命周期（跨重启恢复、cron 调度）、审计、任务图 DAG 执行器均不在本文范围，但本文 S1 的运行记录是它们的地基。

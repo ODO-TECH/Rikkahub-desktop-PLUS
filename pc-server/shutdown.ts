@@ -1,6 +1,6 @@
 // shutdown.ts — HTTP /api/app/shutdown 与 SIGINT/SIGTERM/SIGHUP 共用的停机编排。
 // 固定顺序：停接收入口 → 停状态生产者 → 清理 detached 子进程 → 关 stdio MCP/SSH
-// → 刷 settings/conversations/memory → checkpoint + 释放数据目录锁 → 退出。
+// → 收齐其余登记子进程 → 刷 settings/conversations/memory → checkpoint + 释放数据目录锁 → 退出。
 // 幂等：重复/并发触发共享同一次关停；单步失败只记警告，不阻断后续步骤。
 
 export interface ShutdownHooks {
@@ -10,6 +10,8 @@ export interface ShutdownHooks {
   stopProducers(): Promise<void> | void;
   killDetachedChildren(): void;
   closeStdioAndSsh(): void;
+  /** 专用 MCP/SSH 收尾后收齐其余子进程，再刷盘并释放目录锁。 */
+  killTrackedChildren?(): Promise<void>;
   /** 刷 settings/conversations/memory + WAL checkpoint + 释放数据目录锁。 */
   flushAll(): Promise<void>;
   exit(code: number): void;
@@ -58,6 +60,11 @@ export function createGracefulShutdown(hooks: ShutdownHooks): GracefulShutdown {
         hooks.closeStdioAndSsh();
       } catch (err) {
         warnStep("关闭 stdio MCP/SSH", err);
+      }
+      try {
+        await hooks.killTrackedChildren?.();
+      } catch (err) {
+        warnStep("清理登记子进程", err);
       }
       try {
         await hooks.flushAll();

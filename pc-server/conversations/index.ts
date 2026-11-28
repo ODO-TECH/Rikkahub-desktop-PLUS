@@ -10,7 +10,8 @@ import { hasQueuedMessages } from "./message-queue";
 import { getConversationMeta } from "./read-queries";
 import { generating } from "./generation-state";
 import type { Conversation, ConversationListDto, JsonValue, Message, MessageNode, MessageNodeDto, PcConversationRow, PcMessageNodeRow, PcWorkspaceRow } from "../foundation/types";
-import { clearAllFts, deleteConversationFts, ensureMessageFtsTable, ftsRowCount, rebuildFtsFromNodeTable, replaceNodeFts } from "./fts";
+import { clearAllFts, ensureFtsDirectory, ensureMessageFtsTable, ftsRowCount, rebuildFtsFromNodeTable, replaceNodeFts } from "./fts";
+import { textFromParts } from "../foundation/utils";
 import { reportError } from "../observability/app-errors";
 import { collectPcFileRefs } from "../backup/file-refs";
 import { ensureMemoryTables } from "../memory/sqlite";
@@ -225,6 +226,17 @@ function openConversationsDbUnsafe(): InstanceType<typeof Database> {
       }
     } catch (ftsErr) {
       console.warn("[conv-db] FTS 重建失败（搜索降级为空结果，不影响会话读写）:", ftsErr);
+    }
+    // 行号目录自检：第一次升级、或老版本写过这个库之后，按 FTS 现有内容重建目录（一次扫描，不重新分词）。
+    try {
+      const rebuiltDirectory = ensureFtsDirectory(db);
+      if (rebuiltDirectory) {
+        console.log(
+          `[conv-db] 全文索引行号目录重建完成：${rebuiltDirectory.directoryRows} 行，清掉孤儿索引行 ${rebuiltDirectory.orphanRows} 行`,
+        );
+      }
+    } catch (dirErr) {
+      console.warn("[conv-db] 行号目录自检失败（搜索仍可用，写入按目录缺失慢路径自愈）:", dirErr);
     }
     return db;
   } catch (err) {
@@ -443,10 +455,11 @@ export function upsertConversationRow(conv: Conversation): void {
  *  syncFts=false(专题2 H-c):流式脏 flush 专用——流式期间每 200ms 对整节点做
  *  "删 FTS 行+全文 trigram 重分词"是纯无用功(半成品文本反复索引又删除,实测 100KB
  *  文本 1.1ms、300KB 3.2ms,5 次/秒,成本 O(全文) 随流长累积 O(N²)),且同步占用事件
- *  循环与 SSE 发送竞争。流结束的 persistConversation 全量 reconcile 会重建该会话全部
- *  FTS(stop 端点亦直接 persistConversation),搜索最多晚到流结束才可见——现状本就有
- *  200ms 滞后,语义可接受。唯一残余窗口:流式中进程被硬杀,该节点 FTS 缺最后一段,
- *  下次任何 persistConversation 该会话即自愈;数据本身(节点行)不受影响。 */
+ *  循环与 SSE 发送竞争。这时只写节点行,并删掉这个节点已有的索引行(第一次之后是空操作;
+ *  按目录删,走索引):流式期间这个节点搜不到,流结束的 persistConversation 对账发现
+ *  「有正文、没索引」就补建。不删的话,最后一次 flush 恰好已写入最终内容时,对账会因内容相同
+ *  而跳过,索引就停在生成之前(如重新生成前的那个版本)。流式中进程被硬杀,缺口在下次保存
+ *  这个会话时补上;数据本身(节点行)不受影响。 */
 export function upsertMessageNodeInto(db: InstanceType<typeof Database>, convId: string, node: MessageNode, nodeIndex: number, syncFts = true): void {
   db.prepare(UPSERT_NODE_SQL).run(
     node.id,
@@ -455,7 +468,10 @@ export function upsertMessageNodeInto(db: InstanceType<typeof Database>, convId:
     JSON.stringify(node.messages ?? []),
     node.selectIndex ?? 0,
   );
-  if (!syncFts) return;
+  if (!syncFts) {
+    db.prepare("DELETE FROM pc_message_fts_dir WHERE node_id = ?").run(node.id);
+    return;
+  }
   try { replaceNodeFts(db, convId, node); }
   catch (err) { console.warn("[conv-db] FTS 节点同步失败", node.id, err); }
 }
@@ -467,37 +483,62 @@ export function upsertMessageNode(convId: string, node: MessageNode, nodeIndex: 
 }
 
 /**
- * 全量 reconcile:事务内 upsert 会话行 + 删除该会话全部旧节点 + 按当前顺序重插。
- * 给非流式一次性变更用(改名/置顶/编辑/分叉/导入/流结束)。处理节点增删/重排,显而易见
- * 地正确;一次用户动作调一次,可承受。
+ * 落库对账（S1/PF.2）：事务内 upsert 会话行，读出库里这个会话的节点行逐个与内存比较，只写有差别的——
+ * 内容一样就跳过（序号或选中项变了只更新这两列），不一样或库里没有才写这一行并重建它的索引；
+ * 库里有、内存里没有的节点删掉（外键带走目录行，触发器带走索引行）。
+ * 约 64 处调用不用声明「改了哪里」（漏标一处就丢数据），以库里的实际内容为准。写入量只与这次改动
+ * 成正比，与会话多长、库里有多少别的会话无关；内存里仍要把整个会话序列化比较一遍。
+ * 流式 flush 写节点行时会删掉该节点的索引行（见 upsertMessageNodeInto），所以「内容一样」时还要看有没有索引：
+ * 有正文却没有索引行就补建——流结束那次对账、流式中途崩溃后的下一次保存都靠这一条。
  */
-export function persistConversation(conv: Conversation): void {
-  if (!conversationsDb) throw new Error("conversationsDb not open");
-  const db = conversationsDb;
-  const deleteNodes = db.prepare("DELETE FROM pc_message_node WHERE conversation_id = ?");
-  const insertNode = db.prepare(UPSERT_NODE_SQL);
-  const txn = db.transaction(() => {
-    upsertConversationRow(conv);
-    deleteNodes.run(conv.id);
-    deleteConversationFts(db, [conv.id]);
+export function persistConversationInto(db: InstanceType<typeof Database>, conv: Conversation): void {
+  db.transaction(() => {
+    upsertConversationRowInto(db, conv);
+    const stored = new Map(
+      (db.prepare("SELECT id, node_index, messages, select_index FROM pc_message_node WHERE conversation_id = ?").all(conv.id) as PcMessageNodeRow[])
+        .map((row) => [row.id, row]),
+    );
+    const indexed = new Set(
+      (db.prepare("SELECT DISTINCT node_id FROM pc_message_fts_dir WHERE node_id IN (SELECT id FROM pc_message_node WHERE conversation_id = ?)").all(conv.id) as Array<{ node_id: string }>)
+        .map((row) => row.node_id),
+    );
+    const upsertNode = db.prepare(UPSERT_NODE_SQL);
+    const updatePosition = db.prepare("UPDATE pc_message_node SET node_index = ?, select_index = ? WHERE id = ?");
+    const deleteNode = db.prepare("DELETE FROM pc_message_node WHERE id = ?");
     for (let i = 0; i < (conv.messages ?? []).length; i += 1) {
       const node = conv.messages[i];
       if (!node?.id) continue;
-      insertNode.run(node.id, conv.id, i, JSON.stringify(node.messages ?? []), node.selectIndex ?? 0);
+      const json = JSON.stringify(node.messages ?? []);
+      const selectIndex = node.selectIndex ?? 0;
+      const old = stored.get(node.id);
+      stored.delete(node.id);
+      if (old && old.messages === json) {
+        if (old.node_index !== i || old.select_index !== selectIndex) updatePosition.run(i, selectIndex, node.id);
+        if (!indexed.has(node.id) && (node.messages ?? []).some((message) => message?.id && textFromParts(message.parts ?? []))) {
+          replaceNodeFts(db, conv.id, node);
+        }
+        continue;
+      }
+      upsertNode.run(node.id, conv.id, i, json, selectIndex);
       replaceNodeFts(db, conv.id, node);
     }
-  });
-  txn();
+    for (const row of stored.values()) deleteNode.run(row.id);
+  })();
+}
+
+export function persistConversation(conv: Conversation): void {
+  if (!conversationsDb) throw new Error("conversationsDb not open");
+  persistConversationInto(conversationsDb, conv);
 }
 
 /** 删除会话(CASCADE 带走其节点行,依赖 foreign_keys=ON)。 */
+/** 删除会话(CASCADE 带走其节点行,节点行再带走行号目录,触发器带走索引行;依赖 foreign_keys=ON)。 */
 export function deletePcConversations(ids: string[]): void {
   if (!conversationsDb || ids.length === 0) return;
   const stmt = conversationsDb.prepare("DELETE FROM pc_conversation WHERE id = ?");
   const db = conversationsDb;
   const txn = db.transaction(() => {
     for (const idValue of ids) stmt.run(idValue);
-    deleteConversationFts(db, ids);
   });
   txn();
 }
@@ -636,7 +677,6 @@ export function migrateConversationsIntoDb(db: InstanceType<typeof Database>, co
     conv.contextBoundaryMessageId ?? null,
       );
       deleteNodes.run(conv.id);
-      deleteConversationFts(db, [conv.id]);
       for (let i = 0; i < (conv.messages ?? []).length; i += 1) {
         const node = conv.messages[i];
         if (!node?.id) continue;

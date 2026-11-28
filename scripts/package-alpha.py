@@ -7,7 +7,7 @@ VERSION = json.loads((ROOT / "alpha-manifest.json").read_text(encoding="utf-8"))
 RELEASE = ROOT.parent / ("release-" + VERSION)
 NAME = "RikkaHub-" + VERSION + "-windows-x64"
 STAGE = RELEASE / ".portable-stage" / NAME
-EXCLUDED = {".git", "node_modules", ".react-router", ".scratch", ".superpowers", "build", "dist", "target", "pc-data", "alpha-data", "demo-data", "webview2-data", "backups", "alpha-evidence", "pi", "pi-patches", "pi-model-data", "yukkuri-sdk", "demo-profiles", "__pycache__"}
+EXCLUDED = {".git", "node_modules", ".react-router", ".scratch", ".superpowers", "build", "dist", "target", "pc-data", "alpha-data", "demo-data", "webview2-data", "backups", "alpha-evidence", "pi", "pi-patches", "pi-model-data", "yukkuri-sdk", "demo-profiles", "__pycache__", "mermaid"}
 
 
 def tauri_shell_exe():

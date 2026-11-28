@@ -1,3 +1,4 @@
+import { spawnTracked } from "../foundation/child-registry";
 // files/extraction.ts — 专题4:文档全文提取的子进程编排(父侧)+ worker 模式(子侧)
 //
 // 为什么是"用完即弃的子进程"而不是主进程内直接解析:
@@ -201,8 +202,8 @@ async function runExtractionChild(entry: StoredFile): Promise<void> {
   // 子进程逐页进度里最后一次报的总页数:OCR 升级的「文本密度像扫描件」判定要用它。
   let lastTotalPages: number | null = null;
   try {
-    const child = Bun.spawn({
-      cmd: [process.execPath, ...process.argv.slice(1)],
+    const child = spawnTracked([process.execPath, ...process.argv.slice(1)], {
+      purpose: "document-extraction",
       env: {
         ...process.env,
         RIKKAHUB_EXTRACT_WORKER: "1",

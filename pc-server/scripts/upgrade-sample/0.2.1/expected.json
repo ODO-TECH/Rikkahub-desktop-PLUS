@@ -1,0 +1,115 @@
+{
+  "baselineVersion": "0.2.1",
+  "generatedAt": "2026-11-27T10:44:36.781Z",
+  "mockBaseUrl": "http://127.0.0.1:18192/v1",
+  "continueTarget": "upgrade-smoke-a",
+  "continueText": "升级冒烟：继续这一轮",
+  "conversations": [
+    {
+      "id": "upgrade-smoke-a",
+      "nodeCount": 4,
+      "nodes": [
+        {
+          "id": "4a4b0015-d54b-49b8-b377-79ddd575363a",
+          "selectIndex": 0,
+          "messages": [
+            {
+              "id": "f7d9bb02-28f6-4387-8dee-2401a0e1011c",
+              "role": "USER",
+              "text": "升级冒烟第一问"
+            }
+          ]
+        },
+        {
+          "id": "783e1582-19db-43cb-92a0-1861c29156e0",
+          "selectIndex": 0,
+          "messages": [
+            {
+              "id": "0fea9588-943c-4378-bc91-c1f045430212",
+              "role": "ASSISTANT",
+              "text": "升级冒烟回复 #1：升级冒烟第一问"
+            }
+          ]
+        },
+        {
+          "id": "434bb23b-ba16-40c0-a20a-ab5f30d1690b",
+          "selectIndex": 0,
+          "messages": [
+            {
+              "id": "3223c677-f77c-4451-acd9-5ed54bb23345",
+              "role": "USER",
+              "text": "升级冒烟第二问"
+            }
+          ]
+        },
+        {
+          "id": "9d24ed1f-73fd-4439-93c3-eb3ec3f7ca48",
+          "selectIndex": 0,
+          "messages": [
+            {
+              "id": "a5c48962-f978-4350-9f01-172d00dc41ff",
+              "role": "ASSISTANT",
+              "text": "升级冒烟回复 #2：升级冒烟第二问"
+            }
+          ]
+        }
+      ],
+      "history": [
+        {
+          "role": "USER",
+          "text": "升级冒烟第一问"
+        },
+        {
+          "role": "ASSISTANT",
+          "text": "升级冒烟回复 #1：升级冒烟第一问"
+        },
+        {
+          "role": "USER",
+          "text": "升级冒烟第二问"
+        },
+        {
+          "role": "ASSISTANT",
+          "text": "升级冒烟回复 #2：升级冒烟第二问"
+        }
+      ]
+    },
+    {
+      "id": "upgrade-smoke-b",
+      "nodeCount": 2,
+      "nodes": [
+        {
+          "id": "e9d09edb-e7d4-411f-a237-137ee4ab7162",
+          "selectIndex": 0,
+          "messages": [
+            {
+              "id": "b989b7d6-a651-4da2-8567-75a4408b1c62",
+              "role": "USER",
+              "text": "升级冒烟另一个会话"
+            }
+          ]
+        },
+        {
+          "id": "1b70640e-99ed-4ffd-ac30-c30c0ee38e3b",
+          "selectIndex": 0,
+          "messages": [
+            {
+              "id": "3646b8b3-fdd7-4313-932e-b063974964a2",
+              "role": "ASSISTANT",
+              "text": "升级冒烟回复 #3：升级冒烟另一个会话"
+            }
+          ]
+        }
+      ],
+      "history": [
+        {
+          "role": "USER",
+          "text": "升级冒烟另一个会话"
+        },
+        {
+          "role": "ASSISTANT",
+          "text": "升级冒烟回复 #3：升级冒烟另一个会话"
+        }
+      ]
+    }
+  ]
+}

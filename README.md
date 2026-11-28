@@ -1,4 +1,4 @@
-> **0.2.1 版本**：工作区默认 Agent，可在同一会话切换纯对话；对话标签固定纯对话；已接入轻量内核。运行方式、架构与限制见 [ALPHA.md](ALPHA.md)。下文未更新的性能数字和平台说明属于原项目历史，不能视为此 Alpha 的实测结果。
+> **0.2.2 版本**：工作区默认 Agent，可在同一会话切换纯对话；对话标签固定纯对话；已接入轻量内核。运行方式、架构与限制见 [ALPHA.md](ALPHA.md)。下文未更新的性能数字和平台说明属于原项目历史，不能视为此 Alpha 的实测结果。
 
 <div align="center">
   <img src="docs/icon.png" alt="RikkaHub Desktop PLUS" width="96" />
@@ -8,10 +8,10 @@
   <p>Windows 桌面客户端、Linux x64 服务端与 Docker 自托管 · 多供应商 · 本地数据优先</p>
 
   <p>
-    <a href="LICENSE"><img alt="Version" src="https://img.shields.io/badge/version-0.2.1-2f81f7"></a>
+    <a href="LICENSE"><img alt="Version" src="https://img.shields.io/badge/version-0.2.2-2f81f7"></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0%20%7C%20Commercial-2f81f7"></a>
     <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Docker-3fb950">
-    <img alt="Runtime" src="https://img.shields.io/badge/runtime-Bun%201.4.2-f472b6">
+    <img alt="Runtime" src="https://img.shields.io/badge/runtime-Bun%201.4.5-f472b6">
     <img alt="Shell" src="https://img.shields.io/badge/shell-Tauri%20%2B%20Rust-24c8db">
     <img alt="Storage" src="https://img.shields.io/badge/storage-SQLite%20%2B%20FTS5%20%2B%20vector-ffa657">
   </p>
@@ -26,7 +26,7 @@
 - **工作区与工具链。** 会话可以绑定真实文件夹或 SSH 远程目录，模型获得读写文件、shell、grep 等工具；新增 Skills、stdio MCP、并行子智能体和内置终端。
 - **部署。** 容器运行时使用 Debian slim，自带 bash、zip/unzip 与字体注册；加入面向飞牛 OS 等 Linux NAS 的编排，并提供 Windows 本地与容器两种系统级写入边界。
 
-本目录版本为 0.2.1。原项目 0.1.4 的历史说明：从 0.0.2 算起，累计变更 393 个文件、新增约 5.6 万行。下面的功能清单按模块整理，构建与部署细节在后面的章节和 `docs/` 里。
+本目录版本为 0.2.2。原项目 0.1.4 的历史说明：从 0.0.2 算起，累计变更 393 个文件、新增约 5.6 万行。下面的功能清单按模块整理，构建与部署细节在后面的章节和 `docs/` 里。
 
 Windows 便携版在本仓库的 [Releases](https://github.com/ODO-TECH/Rikkahub-desktop-PLUS/releases) 提供，应用内的更新检查也指向本仓库。项目名里的 PLUS 只代表本分支的增量，不属于上游品牌；数据目录、环境变量前缀与技术标识符与上游保持一致，可以和上游版本共用同一份 `pc-data/`。
 
@@ -69,7 +69,7 @@ Windows 便携版在本仓库的 [Releases](https://github.com/ODO-TECH/Rikkahub
 
 模型拿到的工作区工具是 `read`、`read_files`、`write`、`edit`、`bash`，无 bash 的机器上另有 `grep`、`find`、`ls`，与安卓端的能力面一致。除此之外还有网页搜索与抓取、剪贴板、时间、TTS、加载技能、保存记忆，以及 `ask_user` 交互式提问卡（多选加自由文本）。`subagent_dispatch` 把并行子任务当作一个普通工具接入，走同一套审批，卡片上实时显示子任务的 token 消耗和预算；该功能默认关闭，深度固定为 1，并发 1 到 8 可调。
 
-工作区工具面另有一组实验契约，默认全部关闭；关闭时 `read` / `edit` 的输出与行为保持原样。开启后聊天与 pi 两条通路同时生效：
+工作区工具面另有一组实验契约，默认全部关闭；关闭时 `read` / `edit` 的输出与行为保持原样。开启后聊天与 agent 两条通路同时生效：
 
 | 开关 | 作用 |
 | --- | --- |
@@ -107,7 +107,7 @@ Windows 便携版在本仓库的 [Releases](https://github.com/ODO-TECH/Rikkahub
 
 内置 21 个供应商预设（OpenAI、ChatGPT、Anthropic、Claude、Gemini、xAI、Grok、DeepSeek、智谱、月之暗面、Kimi Code、阿里云百炼、火山引擎、腾讯混元、MiniMax、MIMO、阶跃星辰、OpenRouter、Vercel、Copilot、钠API），也支持任意 OpenAI / Anthropic / Google 兼容端点。三种协议族可以互相切换，各厂商的端点路径有实测表；单个模型还能通过 `providerOverwrite` 单独指定网关、base 和 key。
 
-场景模型共 9 个位置：聊天、快速、翻译、OCR、压缩、提示词优化、嵌入、重排、记忆。OCR 位置可以再挂 DeepSeek 官方 OCR 当主引擎（默认关，单独填官方 Key）：图片优先官方识别，文档只在本地解析读不出文字时才升级去识别，纯文本型 PDF/Word/PPT 照常本地解析不花钱；官方接口失败自动回落到所配的视觉模型，Key 不进安卓备份。压缩提示词对「对话引擎」和「工作区引擎」分别可编辑。订阅制账号走 OAuth，提供浏览器回调和设备码两种方式，凭据不会下发到浏览器。测试面板覆盖 non-stream、stream、tools、embeddings、rerank 和图像输出，配额与余额可以直接查询。推理强度支持到 `xhigh` 和 `max`（给 pi 引擎打了补丁），历史思考可以回灌，提示词缓存带 TTL 和 `prompt_cache_key`。
+场景模型共 9 个位置：聊天、快速、翻译、OCR、压缩、提示词优化、嵌入、重排、记忆。OCR 位置可以再挂 DeepSeek 官方 OCR 当主引擎（默认关，单独填官方 Key）：图片优先官方识别，文档只在本地解析读不出文字时才升级去识别，纯文本型 PDF/Word/PPT 照常本地解析不花钱；官方接口失败自动回落到所配的视觉模型，Key 不进安卓备份。压缩提示词对「对话引擎」和「工作区引擎」分别可编辑。订阅制账号走 OAuth，提供浏览器回调和设备码两种方式，凭据不会下发到浏览器。测试面板覆盖 non-stream、stream、tools、embeddings、rerank 和图像输出，配额与余额可以直接查询。推理强度支持到 `xhigh` 和 `max`（档位映射已内置在内核出线层），历史思考可以回灌，提示词缓存带 TTL 和 `prompt_cache_key`。
 
 ### 语音与媒体生成
 
@@ -182,27 +182,11 @@ Web 暴露面的处理：默认只监听 `127.0.0.1` 和 `::1`（双栈成组绑
 
 ### 前置要求
 
-- [Bun](https://bun.sh/) **1.4.2**（与 CI、Dockerfile 保持同一版本）
+- [Bun](https://bun.sh/) **1.4.5**（与 CI、Dockerfile 保持同一版本）
 - Git；Windows 上建议安装 Git for Windows（内嵌 bash 运行时从它的安装目录抽取）
 - Windows 桌面壳需要系统 Edge WebView2 运行时（Windows 10 / 11 随 Edge 提供）。检测不到时会提示并打开微软官方下载页。
 
-### 还原 pi 引擎（源码运行首次必须）
-
-对话与工具编排引擎来自 [earendil-works/pi](https://github.com/earendil-works/pi)，源码不随本仓库分发，只跟踪补丁和模型数据快照：
-
-```bash
-git clone --filter=blob:none --no-checkout https://github.com/earendil-works/pi.git pi
-cd pi
-git checkout d981de1229ef899957bbe968bc8dcda02a21f477
-git reset --hard
-git apply ../pi-patches/*.patch
-bun install
-mkdir -p packages/ai/src/providers/data
-cp ../pi-model-data/*.json ../pi-model-data/.manifest.json packages/ai/src/providers/data/
-cd ..
-```
-
-`pi/` 和 `node_modules/` 是源码运行依赖，便携版 exe 不需要。
+pi 引擎已于 2026-11-22 退役，源码运行**不再需要克隆 pi**：对话与工具编排由仓库内的 `agent-kernel/` 提供，OAuth 协议选段固定在 `vendor/pi-auth/`，原 pi 集成归档在 `backups/alpha-retired-pi-20261122.zip`（清单见 `retired-pi-manifest.json`）。
 
 ### 源码运行
 
@@ -238,7 +222,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-访问密码是 compose 的必填项。没有设置时 `docker compose up` 会直接报错退出，不会起一个不鉴权的服务。容器内监听端口固定为 **11451**（`114514` 超出 TCP 合法范围，会被内核和 `docker -p` 拒绝）；宿主机端口用 `RIKKAHUB_HTTP_PORT` 覆盖，容器内不做端口顺延。首次构建要在容器里克隆 pi 引擎并编译前后端，需要数分钟到十几分钟，之后复用缓存，几秒即可启动。镜像以 uid/gid 1000 非 root 运行，用 `docker run` 之前先执行 `sudo chown -R 1000:1000 pc-data`。
+访问密码是 compose 的必填项。没有设置时 `docker compose up` 会直接报错退出，不会起一个不鉴权的服务。容器内监听端口固定为 **11451**（`114514` 超出 TCP 合法范围，会被内核和 `docker -p` 拒绝）；宿主机端口用 `RIKKAHUB_HTTP_PORT` 覆盖，容器内不做端口顺延。首次构建要在容器里安装依赖并编译前后端，需要数分钟到十几分钟，之后复用缓存，几秒即可启动。镜像以 uid/gid 1000 非 root 运行，用 `docker run` 之前先执行 `sudo chown -R 1000:1000 pc-data`。
 
 不用 compose 时，加固项要自己补齐：
 
@@ -249,7 +233,7 @@ docker run -d --name rikkahub-plus --restart unless-stopped \
   -p 11451:11451 \
   -e RIKKAHUB_PASSWORD='换成你的密码' \
   -v "$PWD/pc-data:/app/pc-data" \
-  rikkahub-desktop-plus:0.2.1
+  rikkahub-desktop-plus:0.2.2
 ```
 
 只有 `/app/pc-data` 必须挂载。不要把宿主目录挂到 `/app` 或 `/app/web-ui`，那会覆盖镜像里的程序文件。要交给 agent 使用的 NAS 目录，通过挂载表划边界：
@@ -415,7 +399,7 @@ Bug 和功能建议请开 Issue，并按仓库内的模板填写环境与复现�
 - [@re-ovo](https://github.com/re-ovo) 与 [RikkaHub](https://github.com/rikkahub/rikkahub)
 - [yuh-G/rikkahub-desktop](https://github.com/yuh-G/rikkahub-desktop)
 - [@Noah0932](https://github.com/Noah0932)（Debian / Ubuntu、Arch 打包）、[@AstralFlare-owo](https://github.com/AstralFlare-owo)（Nix / NUR）
-- [earendil-works/pi](https://github.com/earendil-works/pi)（对话与工具编排引擎）
+- [earendil-works/pi](https://github.com/earendil-works/pi)（工作区工具内核与 OAuth 快照的来源；pi 引擎已于 2026-11-22 退役）
 - [Chevey339/kelivo](https://github.com/Chevey339/kelivo)（互传对端格式）
 
 ## English summary

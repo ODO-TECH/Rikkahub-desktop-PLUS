@@ -28,7 +28,7 @@ const iconRules: Array<[RegExp, string]> = [
   // muse-spark/glimmer(Meta 系,对齐 APP PATTERN_META)落 meta 标。
   [/meta\b|(?<!o)llama|muse/i, "meta-color.svg"],
   [/grok/i, "grok.svg"],
-  [/qwen|qwq|qvq/i, "qwen-color.svg"],
+  [/qwen|qwq|qvq|\bwanx?[\d-]/i, "qwen-color.svg"],
   // 豆包:label 是中文"豆包",APP 模式为 doubao|豆包|火山;火山由下方 bytedance 规则兜住,
   // 这里补 doubao|豆包 让搜索服务的中文标签命中豆包专属图标(而非落 bytedance)。
   [/doubao|豆包/i, "doubao-color.svg"],
@@ -63,7 +63,9 @@ const iconRules: Array<[RegExp, string]> = [
   [/cohere|command-.+/i, "cohere-color.svg"],
   [/tavern/i, "tavern.png"],
   [/cerebras/i, "cerebras-color.svg"],
-  [/nvidia/i, "nvidia-color.svg"],
+  [/nvidia|nemotron|英伟达/i, "nvidia-color.svg"],
+  // 与 APP AIIconMatcher 对齐:商汤系(日日新/SenseChat)用 sensenova 标。
+  [/sensenova|sensetime|sensechat|商汤|日日新/i, "sensenova-color.svg"],
   [/ppio|派欧/i, "ppio-color.svg"],
   [/vercel/i, "vercel.svg"],
   [/groq/i, "groq.svg"],
@@ -83,7 +85,12 @@ const iconRules: Array<[RegExp, string]> = [
   // serper 不在 lobehub 图标库(APP 同样落灰底字母),用官方品牌标(serper.dev 的 S-in-ring)。
   [/serper/i, "serper.png"],
   [/searxng/i, "searxng.svg"],
-  [/naapi|钠/i, "naapi.jpg"],
+  // 与 APP AIIconMatcher 对齐:钠API 换成新版竖标(naapi-color.svg);sta1n 用官方位图。
+  [/naapi|钠api|鈉api/i, "naapi-color.svg"],
+  [/sta1n/i, "sta1n.png"],
+  // TTS 服务商图标(APP 同款):ElevenLabs / Fish Audio。
+  [/elevenlabs/i, "elevenlabs.svg"],
+  [/fish[ ._-]?audio|fishaudio/i, "fish-audio.svg"],
 ];
 
 export function iconForName(name: string) {

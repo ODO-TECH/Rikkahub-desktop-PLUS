@@ -25,7 +25,7 @@ docker compose logs -f
 访问密码在 compose 里是**必填项**：没有设置时 `docker compose up` 会直接报错退出，而不是起一个不鉴权的服务。只构建镜像、不用 compose 时，密码同样必须显式给出：
 
 ```bash
-docker build -t rikkahub-desktop-plus:0.2.1 .
+docker build -t rikkahub-desktop-plus:0.2.2 .
 docker run -d --name rikkahub-plus \
   --restart unless-stopped \
   --read-only \
@@ -35,7 +35,7 @@ docker run -d --name rikkahub-plus \
   -p 11451:11451 \
   -e RIKKAHUB_PASSWORD='换成你的密码' \
   -v "$PWD/pc-data:/app/pc-data" \
-  rikkahub-desktop-plus:0.2.1
+  rikkahub-desktop-plus:0.2.2
 ```
 
 `docker run` 不会继承 compose 里的加固项。上面几个参数至少要补齐 `--read-only`、`--tmpfs /tmp`、`--cap-drop ALL`、`--security-opt no-new-privileges`；少了 `--read-only` 根 fs 就是可写的，沙盒会如实报 `not_enforced`。镜像已经固定 `USER 1000:1000`，不需要再传 `--user`。
@@ -122,7 +122,7 @@ docker compose up -d
 | `home/` | 容器内的 `HOME`：agent 的 `~` 展开与各类工具缓存；`~` 不指向宿主家目录 | 视内容 |
 | `memory/` | `global_memory.json`、`assistant_memory.json`、`pending_memory.json`：SQLite 是权威源，这三份是可读快照/灾备，迁移与回退仍会读它们 | 是 |
 | `AGENTS.md` | 全局工作区指引 | 视内容 |
-| `pi-agent/` | 引擎工作目录；`sessions/` 已退役，启动卫生会清理残留，可安全清空 | 否 |
+| `pi-agent/` | 原引擎工作目录（pi 已退役）；`sessions/` 残留由启动卫生清理，可安全清空；目录本体作资源面保留 | 否 |
 | `updates/` | 已下载更新包缓存；容器内更新被禁用，通常为空 | 否 |
 | `logs/` | 仅在**上次异常退出**时保留取证日志（`server.log`、`server.boot.pending.log`） | 可能含运行细节 |
 | `device-id.txt` | 匿名统计用的设备 UUID；镜像默认 `RIKKAHUB_ANALYTICS=0`，不会创建 | 否 |

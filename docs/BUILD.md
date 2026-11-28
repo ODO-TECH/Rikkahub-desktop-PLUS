@@ -11,7 +11,7 @@ publishing your own release feed.
 
 | 工具 | 版本要求 | 用途 |
 |---|---|---|
-| [Bun](https://bun.sh/) | **1.4.2**（与 CI/Dockerfile 钉死同版本） | 运行时、打包器、`--compile` 出单文件 exe |
+| [Bun](https://bun.sh/) | **1.4.5**（与 CI/Dockerfile 钉死同版本） | 运行时、打包器、`--compile` 出单文件 exe |
 | [Git for Windows](https://gitforwindows.org/) | 任意近期版本 | 前端依赖 + 内嵌 bash 运行时的抽取源 |
 | Python 3 | 3.x | 运行 `scripts/package-alpha.py`（`--compact` 需 `py7zr`） |
 | Rust (rustup, MSVC target) | stable | 仅 Tauri 壳需要 |
@@ -124,7 +124,7 @@ Tauri 壳只消费 `shell.ini` 的 `dataDir` 与 `minimizeToTray`；`port`/`serv
 bash scripts/build-linux.sh                    # → ../release-<version>/Rikkahub_<version>_linux_x64.tar.gz
 ```
 
-在 Linux x86_64 上执行，使用 Bun 1.4.2；脚本与 CI 共用，同步构建前端、编译后端并打包
+在 Linux x86_64 上执行，使用 Bun 1.4.5；脚本与 CI 共用，同步构建前端、编译后端并打包
 字体、图标、许可和使用说明。仅发布 tar.gz，不生成 AppImage、deb 或 Linux Tauri 桌面壳。
 解压后的启动方式见 [LINUX.md](LINUX.md)。Windows 与 Linux 的 `node_modules` 必须分别安装。
 
@@ -188,6 +188,10 @@ Windows 上 `bun test` 有 3 个恒定失败，不是回归、不必 bisect：2 
   spawn 只要 20–25 ms。后端 bootstrap 第一步正好需要 spawn（附件/工作区相关），于是每次
   启动都恒定卡 3.3 s。修法是 `pc-server/foundation/spawn-warm.ts`：进程一起来就在独立
   Worker 里 spawn 一个 `cmd /c exit` 垫掉首次开销，15 s 兜底、失败静默、绝不影响启动。
+  2026-11-28 在 Bun **1.4.5** 上复测，首次 `spawn` 同步段三次为 3.34 / 3.82 / 15.06 s，
+  末次后续调用也有 5.01 s 的环境抖动；首次停顿仍在，因此保留垫刀。相同冻结源码、新建
+  数据目录的编译后端各启动三次，1.4.2 / 1.4.5 的 `/api/health` 就绪中位数为
+  0.544 / 0.545 s；这是后端就绪耗时，不能替代上表 CDP 测量的完整界面可用时间。
   注意 **`bun --compile` 不会把按路径引用的 Worker 打进可执行文件**（三种写法都实测失败：
   `new Worker("./x.ts")`、`new URL(...)` 形式解析到 `B:\~BUN\root\…`、`?worker` 导入直接
   报错），所以 worker 源码必须走 `URL.createObjectURL(new Blob([…]))` 内联。

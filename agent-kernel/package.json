@@ -5,6 +5,6 @@
   "type": "module",
   "exports": { ".": "./src/index.ts", "./openai": "./src/openai.ts" },
   "scripts": { "test": "bun test", "typecheck": "tsc -p tsconfig.json", "demo": "bun run examples/local.ts" },
-  "devDependencies": { "@types/bun": "1.4.2", "typescript": "5.9.3" },
-  "engines": { "bun": ">=1.4.2" }
+  "devDependencies": { "@types/bun": "1.4.5", "typescript": "5.9.3" },
+  "engines": { "bun": ">=1.4.5" }
 }

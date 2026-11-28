@@ -4,12 +4,9 @@
 // 三条断言对应 net.ts 拦截器设计的三个根基,每条都用「本地可控靶标」做决定性判定,
 // 不依赖外网/系统代理是否在线,故在任何机器与 CI 上结论一致:
 //
-//   A. env 快照锁是否仍在(对照 net.ts:274 注释):
-//      Bun fetch 在「进程首次网络请求」时快照 *_PROXY env 并锁定。判定法:
-//      装好拦截器后发一次请求(触发快照),随后运行时把 HTTPS_PROXY 改指一个
-//      「必死的本地端口」。若后续 direct 请求仍命中真实代理(而非死代理),
-//      说明运行时的 env 变更未被采信 → 锁仍在;若改打向死代理 → 锁已解除。
-//      (快照锁是 net.ts:274 设计的根基;若变了 = 重大发现,停下上报。)
+//   A. Bun 1.4.5 按当前 env 处理代理；写入/删除即时生效，ALL_PROXY 可兜底。
+//      裸 fetch 用在线本地代理 + .invalid 目标验证；桌面拦截器清除继承变量，
+//      direct/manual 的唯一配置源是应用设置。1.4.2 对照组应在动态 env 断言失败。
 //
 //   B. 拦截器 per-request 注入是否按 mode 正确分流:
 //      同一进程、同一 globalThis.fetch,仅切换 getProxyConfig() 的返回值:
@@ -20,6 +17,7 @@
 //      fetch 一个必死的本地端口触发 ECONNREFUSED,确认错误形态(code/message)
 //      仍被 net.ts 的正则捕获,友好提示照常产出。
 import { installProxyFetchInterceptor, classifyProxyError } from "../foundation/net";
+import { RUNNING_IN_CONTAINER } from "../foundation/platform";
 import type { ProxyConfig } from "../foundation/types";
 
 let failures = 0;
@@ -56,26 +54,36 @@ async function statusOf(url: string): Promise<number | "ERR"> {
 
 console.log(`[proxy-behavior] Bun ${Bun.version}  origin=:${origin.port} proxy=:${proxy.port} dead=:${deadPort}`);
 
-// 默认 direct 配置:安装拦截器但不注入任何代理(非容器下还会清空 *_PROXY env)。
+const envKeys = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "all_proxy", "no_proxy"];
+for (const key of envKeys) delete process.env[key];
+// ── A. 新版原生 env 语义，使用未安装拦截器的 fetch ─────────────────────────
+await statusOf(originUrl);
+process.env.HTTP_PROXY = proxyUrl;
+seenByProxy.length = 0;
+const envStatus = await statusOf("http://proxy-probe.invalid/env");
+check("A1 首次请求后写入 HTTP_PROXY 即时生效", envStatus === 200 && seenByProxy.length === 1, { envStatus });
+delete process.env.HTTP_PROXY;
+seenByProxy.length = 0;
+const deletedStatus = await statusOf("http://proxy-probe.invalid/deleted");
+check("A2 删除 HTTP_PROXY 后不再走代理", deletedStatus === "ERR" && seenByProxy.length === 0, { deletedStatus });
+process.env.ALL_PROXY = proxyUrl;
+seenByProxy.length = 0;
+const allStatus = await statusOf("http://proxy-probe.invalid/all");
+check("A3 ALL_PROXY 为 HTTP 请求提供兜底", allStatus === 200 && seenByProxy.length === 1, { allStatus });
+for (const key of envKeys) process.env[key] = proxyUrl;
+
+// 默认 direct 配置:非容器下安装拦截器时清空全部继承代理 env。
 const directCfg: ProxyConfig = { mode: "direct" } as ProxyConfig;
 let cfg = directCfg;
 installProxyFetchInterceptor(() => cfg);
 
-// ── A. env 快照锁 ────────────────────────────────────────────────────────────
-// 触发首次请求(建立快照),再改 env 指死代理,观察后续 direct 请求的落点。
-await statusOf(originUrl);
-process.env.HTTPS_PROXY = deadUrl;
-
-seenByProxy.length = 0;
-const afterStatus = await statusOf(originUrl);
-const wentToDead = afterStatus === "ERR";
-const reachedOrigin = afterStatus === 204;
-check("A1 快照锁仍在:运行时改 env 后 direct 请求不转投死代理(仍达真靶)", reachedOrigin && !wentToDead, { afterStatus });
-check("A2 死代理确实不可达(对照组有效)", (await statusOf(deadUrl)) === "ERR");
-console.log(`  ..  env 快照锁: 首次请求后改 HTTPS_PROXY=${deadUrl},direct 请求 ${reachedOrigin ? "仍达真靶(锁仍在)" : wentToDead ? "转投死代理(锁已解除!)" : "落到别处"}`);
-
-// 清理 env,避免影响后续用例与本进程外其它逻辑。
-delete process.env.HTTPS_PROXY;
+if (!RUNNING_IN_CONTAINER) {
+  check("A4 桌面安装拦截器后全部继承代理 env 已清除", envKeys.every(key => process.env[key] === undefined));
+} else {
+  check("A4 容器保留部署代理 env", envKeys.every(key => process.env[key] === proxyUrl));
+  for (const key of envKeys) delete process.env[key];
+}
+check("A5 死代理确实不可达(对照组有效)", (await statusOf(deadUrl)) === "ERR");
 
 // ── B. 拦截器 per-request 分流 ───────────────────────────────────────────────
 // 注意:net.ts 的 bypass 把 localhost/127.0.0.1/::1 硬编码为「永远直连」,

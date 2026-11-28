@@ -65,4 +65,22 @@ describe("iconForName", () => {
     expect(iconForName("muse-glimmer")).toBe("meta-color.svg");
     expect(iconForName("meta-llama-3")).toBe("meta-color.svg");
   });
+
+  test("上游 logo 同步:商汤/sta1n/钠API/ElevenLabs/Fish Audio/万相/nemotron", () => {
+    // 新增厂商图标(从 APP assets/icons 同步)
+    expect(iconForName("SenseNova")).toBe("sensenova-color.svg");
+    expect(iconForName("商汤日日新")).toBe("sensenova-color.svg");
+    expect(iconForName("sta1n")).toBe("sta1n.png");
+    expect(iconForName("钠API")).toBe("naapi-color.svg");
+    expect(iconForName("ElevenLabs")).toBe("elevenlabs.svg");
+    expect(iconForName("Fish Audio")).toBe("fish-audio.svg");
+    expect(iconForName("fish-audio")).toBe("fish-audio.svg");
+    // 规则增量:万相(wan/wanx)走通义千问标;nemotron 走 NVIDIA 标
+    expect(iconForName("wan2.5")).toBe("qwen-color.svg");
+    expect(iconForName("wanx2.1")).toBe("qwen-color.svg");
+    expect(iconForName("nemotron-4")).toBe("nvidia-color.svg");
+    expect(iconForName("英伟达")).toBe("nvidia-color.svg");
+    // 不误伤:swan 的 wan 前无词边界
+    expect(iconForName("swan-2")).not.toBe("qwen-color.svg");
+  });
 });

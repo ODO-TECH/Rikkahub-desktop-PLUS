@@ -1,4 +1,4 @@
-// scripts/fetch-idle-timeout-smoke.ts — 判定 Bun 1.4.0 fetch 默认 socket 空闲超时(300s?)
+// scripts/fetch-idle-timeout-smoke.ts — 判定当前 Bun fetch 默认 socket 空闲超时(300s?)
 // 是否会在「等响应头」阶段杀掉长思考型请求,以及 timeout:0 是否可靠禁用它。
 //
 // 方法(本地决定性,零外网/零 key):起一个 HTTP 服务器,把「发响应头」延迟 delayMs

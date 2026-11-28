@@ -442,6 +442,7 @@ const ROW_ENTRIES: readonly SettingsSearchEntry[] = [
   // 实验功能（AgentBot：自主循环 / 运行记录 / 传输重试）
   literal("agent", "运行", { keywords: "agent_bot" }),
   literal("agent", "网络失败重试", { keywords: "agent_bot" }),
+  literal("agent", "重试等待间隔", { keywords: "agent_bot" }),
   literal("agent", "验证计划完成", { keywords: "agent_bot" }),
   literal("agent", "定时任务", { keywords: "agent_bot" }),
   literal("agent", "运行记录", { keywords: "agent_bot", advanced: true }),

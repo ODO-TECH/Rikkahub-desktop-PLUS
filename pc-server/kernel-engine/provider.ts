@@ -1,5 +1,6 @@
 import type { Json, Message, ModelEvent, ModelProvider, ModelRequest } from "../../agent-kernel/src/types";
 import type { EngineRunContext } from "../engines";
+import { isQuotaOrBillingError, parseRetryAfterMs } from "../inference-engine/transport-retry";
 import type { ApiMessage } from "../foundation/types";
 import { message } from "../foundation/utils";
 import { applyCustomBody, applyRequestHeaders } from "../model-providers";
@@ -145,7 +146,12 @@ export class DesktopProvider implements ModelProvider {
     }
     finally {clearTimeout(timer);}
     console.log(`[kernel-timing] model=${request.model} headers=${Date.now()-startedAt}ms`);
-    if(!response.ok) throw new ProviderError(`HTTP ${response.status}: ${(await response.text()).slice(0,1600)}`,[408,429].includes(response.status) || response.status >= 500);
+    if(!response.ok) {
+      const body = await response.text();
+      throw new ProviderError(`HTTP ${response.status}: ${body.slice(0,1600)}`,
+        ([408,429].includes(response.status) || response.status >= 500) && !isQuotaOrBillingError(body),
+        parseRetryAfterMs(response.headers.get("retry-after")));
+    }
     const draft=message("ASSISTANT",[]);
     const hooks:any={message:draft, sink:(e:any)=>{
       if(e.kind === "text_delta") push({type:"text",delta:e.text});

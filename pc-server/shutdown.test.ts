@@ -18,6 +18,16 @@ function recorder(overrides: Partial<ShutdownHooks> = {}) {
 }
 
 describe("createGracefulShutdown", () => {
+  test("awaits tracked cleanup after MCP/SSH and before releasing the data lock", async () => {
+    const { calls, hooks } = recorder();
+    hooks.killTrackedChildren = async () => {
+      await Promise.resolve();
+      calls.push("tracked");
+    };
+    await createGracefulShutdown(hooks).run();
+    expect(calls).toEqual(["ingress:true", "producers", "detached", "stdio-ssh", "tracked", "flush", "exit:0"]);
+  });
+
   test("信号路径按固定顺序执行:停接收→停生产者→清 detached→关 stdio/SSH→刷盘→退出", async () => {
     const { calls, hooks } = recorder();
     const shutdown = createGracefulShutdown(hooks);

@@ -1,3 +1,4 @@
+import { sweepStaleOnStartup, killTrackedOnShutdown } from "./foundation/child-registry";
 import { dataDir, statePath, uiOriginRecordPath } from "./foundation/paths";
 import { RUNNING_IN_CONTAINER, tempDir } from "./foundation/platform";
 import { setActualServingHostnames, setActualServingPort } from "./foundation/net";
@@ -118,6 +119,13 @@ try {
 } catch (err) {
   if (err instanceof DataDirLockedError) abortStartup(3, err.message);
   throw err;
+}
+
+const { stale: staleChildren } = sweepStaleOnStartup();
+if (staleChildren.length) {
+  const message = `[children] 上次登记的子进程残留（仅报告，不自动终止）：${JSON.stringify(staleChildren)}`;
+  console.warn(message);
+  reportError("internal", "info", message);
 }
 
 const args = new Set(Bun.argv.slice(1));
@@ -564,6 +572,7 @@ async function flushAllStateBeforeExit(): Promise<void> {
  *  Low，抹掉标记会让它重跑标注/自降级（子进程仍是 Low，只会自我循环）。 */
 function spawnReplacementProcess(): void {
   try {
+    // 替代进程必须活过当前实例退出，豁免子进程登记与关停清理。
     const child = Bun.spawn({
       cmd: [process.execPath, ...process.argv.slice(1)],
       cwd: process.cwd(),
@@ -581,7 +590,7 @@ function spawnReplacementProcess(): void {
 }
 
 // HTTP 端点与信号共用同一套停机编排：停接收 → 停生产者(生成/IM) → 清 detached →
-// 关 stdio MCP/SSH → 刷盘/checkpoint/解锁 → 退出。幂等与顺序由 shutdown.ts 锁定。
+// 关 stdio MCP/SSH → 收齐其余登记子进程 → 刷盘/checkpoint/解锁 → 退出。顺序由 shutdown.ts 锁定。
 const gracefulShutdown = createGracefulShutdown({
   stopIngress(closeActiveConnections) {
     originRelay.stopAll();
@@ -605,6 +614,7 @@ const gracefulShutdown = createGracefulShutdown({
     closeAllStdioClients();
     closeAllSshConnections();
   },
+  killTrackedChildren: killTrackedOnShutdown,
   flushAll: flushAllStateBeforeExit,
   exit(code) {
     if (restartRequested) spawnReplacementProcess();
@@ -681,6 +691,7 @@ if (willOpenBrowser) {
   const command = process.platform === "win32"
     ? ["/c", "start", target]
     : ["-c", `open ${target} || xdg-open ${target}`];
+  // 用户浏览器是独立桌面应用，不能随服务关停而终止，豁免登记。
   Bun.spawn([opener, ...command], { stdout: "ignore", stderr: "ignore" });
 }
 

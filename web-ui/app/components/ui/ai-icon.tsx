@@ -29,7 +29,7 @@ export function AIIcon({
   const normalizedName = name.trim() || "auto";
   const fallbackText = toFallbackText(normalizedName);
   const src = React.useMemo(
-    () => `/api/ai-icon?name=${encodeURIComponent(normalizedName)}&v=2`,
+    () => `/api/ai-icon?name=${encodeURIComponent(normalizedName)}&v=3`,
     [normalizedName],
   );
   const [loadFailed, setLoadFailed] = React.useState(false);
